@@ -63,9 +63,19 @@ export async function handleResponse<T>(response: Response): Promise<T> {
         response.status
       )
     }
-    const errorData = await response.json().catch(() => ({ error: 'Unknown error' }))
-    const message = errorData.error || `HTTP ${response.status}`
-    const details = errorData.details
+    const errorData = await response.json().catch(() => null)
+    // Every 403 the API sends is JSON. One that is not came from something in
+    // front of it — typically a WAF (NPG's own, when the UI is published through
+    // a proxy host) rejecting the request body. Calling that a role problem sent
+    // an administrator hunting through permissions they already had. (#307)
+    if (response.status === 403 && errorData === null) {
+      throw new ApiError(
+        'The request was blocked before it reached the server (HTTP 403). A web application firewall or reverse proxy in front of this UI may have rejected it — check its logs.',
+        403
+      )
+    }
+    const message = errorData === null ? 'Unknown error' : errorData.error || `HTTP ${response.status}`
+    const details = errorData?.details
     // 403 now means "your role does not allow this" far more often than anything
     // else, and the server's wording is aimed at API clients ("insufficient
     // permissions", "required: proxy:write"). Say it in terms an operator can act
@@ -85,7 +95,7 @@ export async function handleResponse<T>(response: Response): Promise<T> {
         required ? `Required permission: ${required}` : details
       )
     }
-    throw new ApiError(message, response.status, details, (errorData as { code?: string }).code)
+    throw new ApiError(message, response.status, details, (errorData as { code?: string } | null)?.code)
   }
   // Handle empty responses (204 No Content)
   if (response.status === 204) {
