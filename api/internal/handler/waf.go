@@ -285,6 +285,12 @@ func (h *WAFHandler) DisableRule(w http.ResponseWriter, r *http.Request) {
 		httpJSONError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// The rule's description and category and the reason end up in comments
+	// of the host's ModSecurity file, one line each.
+	if err := model.ValidateExclusionText(req.RuleCategory, req.RuleDescription, req.Reason); err != nil {
+		httpJSONError(w, trimInvalidInputPrefix(err), http.StatusBadRequest)
+		return
+	}
 
 	// Check whether this exact scope is already excluded. Two scopes on one
 	// rule are legitimate — /api/a and /api/b are separate exemptions — so the
@@ -355,6 +361,11 @@ func (h *WAFHandler) DisableRuleByHost(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.RuleID == 0 {
 		httpJSONError(w, "Rule ID is required", http.StatusBadRequest)
+		return
+	}
+	// Written into comments of the host's ModSecurity file, one line each.
+	if err := model.ValidateExclusionText(req.RuleCategory, req.RuleDescription, req.Reason); err != nil {
+		httpJSONError(w, trimInvalidInputPrefix(err), http.StatusBadRequest)
 		return
 	}
 

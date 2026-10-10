@@ -186,3 +186,28 @@ func TestWritableURIBlockRules(t *testing.T) {
 		t.Error("an absent rule list must stay absent")
 	}
 }
+
+func TestImportWAFExclusions_KeepTextOnOneLine(t *testing.T) {
+	repo, tx, mock := beginMockTx(t)
+	const hostID = "00000000-0000-0000-0000-000000000001"
+	mock.ExpectExec(`INSERT INTO waf_rule_exclusions`).
+		WithArgs(hostID, 942100, "SQLI second line", "SQL Injection second line", "first line second line", "admin", "uri", "/search").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	err := repo.importWAFExclusion(context.Background(), tx, &model.WAFExclusionExport{
+		ProxyHostID: hostID, RuleID: 942100, RuleCategory: "SQLI\nsecond line", RuleDescription: "SQL Injection\r\nsecond line",
+		Reason: "first line\nsecond line", DisabledBy: "admin", ScopeType: "uri", ScopeValue: "/search",
+	})
+	if err != nil {
+		t.Fatalf("import per-host exclusion: %v", err)
+	}
+
+	mock.ExpectExec(`INSERT INTO global_waf_rule_exclusions`).
+		WithArgs(941100, "XSS", "XSS Attack", "first line second line", "admin").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	err = repo.importGlobalWAFExclusion(context.Background(), tx, &model.GlobalWAFExclusionExport{
+		RuleID: 941100, RuleCategory: "XSS", RuleDescription: "XSS Attack", Reason: "first line\r\n\r\nsecond line", DisabledBy: "admin",
+	})
+	if err != nil {
+		t.Fatalf("import global exclusion: %v", err)
+	}
+}

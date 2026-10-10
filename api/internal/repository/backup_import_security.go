@@ -106,7 +106,9 @@ func (r *BackupRepository) importWAFExclusion(ctx context.Context, tx *sql.Tx, w
 		log.Printf("[Backup] Skipped WAF exclusion for rule %d: unusable scope (%v). The rule stays enabled on that host; re-create the exemption if it is still needed.", we.RuleID, err)
 		return nil
 	}
-	_, err := tx.ExecContext(ctx, query, we.ProxyHostID, we.RuleID, we.RuleCategory, we.RuleDescription, we.Reason, we.DisabledBy,
+	// The rule's description and category and the reason are written into
+	// comments of the host's ModSecurity file, so they are kept on one line.
+	_, err := tx.ExecContext(ctx, query, we.ProxyHostID, we.RuleID, model.SingleLine(we.RuleCategory), model.SingleLine(we.RuleDescription), model.SingleLine(we.Reason), we.DisabledBy,
 		scope.ScopeType, scope.ScopeValue)
 	return err
 }
@@ -458,7 +460,9 @@ func (r *BackupRepository) importGlobalWAFExclusion(ctx context.Context, tx *sql
 		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (rule_id) DO NOTHING
 	`
-	_, err := tx.ExecContext(ctx, query, we.RuleID, we.RuleCategory, we.RuleDescription, we.Reason, we.DisabledBy)
+	// Written into comments of every WAF host's ModSecurity file, so kept on
+	// one line.
+	_, err := tx.ExecContext(ctx, query, we.RuleID, model.SingleLine(we.RuleCategory), model.SingleLine(we.RuleDescription), model.SingleLine(we.Reason), we.DisabledBy)
 	return err
 }
 

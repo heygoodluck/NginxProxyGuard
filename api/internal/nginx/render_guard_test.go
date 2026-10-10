@@ -425,3 +425,36 @@ func TestHostWAFConfigListsOnlyAddressesInIPMatch(t *testing.T) {
 		t.Errorf("@ipMatch rendered with no usable entry:\n%s", b)
 	}
 }
+
+// A rule exclusion's description, category and reason are written into "#"
+// comments of the host's ModSecurity file. A stored value saved before the API
+// checked them, or restored from a backup, is folded onto its comment's line.
+func TestHostWAFConfigKeepsExclusionTextOnOneLine(t *testing.T) {
+	m, _ := newRequestPathTestManager(t)
+	host := &model.ProxyHost{ID: "00000000-0000-0000-0000-0000000000c6", WAFEnabled: true, WAFMode: "blocking"}
+	exclusions := []model.WAFRuleExclusion{
+		{RuleID: 942100, RuleCategory: "SQLI\nsecond line", RuleDescription: "SQL Injection\r\nsecond line", Reason: "first line\nsecond line", ScopeType: model.WAFScopeHost},
+		{RuleID: 941100, RuleCategory: "XSS", RuleDescription: "XSS Attack", Reason: "search form\u2028second line (global)", ScopeType: model.WAFScopeURI, ScopeValue: "/search"},
+	}
+	if err := m.GenerateHostWAFConfig(context.Background(), host, exclusions, nil); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(m.modsecPath, "host_"+host.ID+".conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(b)
+	for _, want := range []string{
+		"# Rule 942100: SQL Injection second line (SQLI second line)\n# Reason: first line second line\nSecRuleRemoveById 942100\n",
+		"# Rule 941100: XSS Attack (XSS)\n# Reason: search form second line (global)\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("WAF file does not hold %q:\n%s", want, out)
+		}
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "second line") {
+			t.Errorf("stored text started a line: %q", line)
+		}
+	}
+}

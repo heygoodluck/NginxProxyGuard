@@ -1117,7 +1117,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/WAFRuleExclusion'
         '400':
-          description: Invalid scope_type or scope_value
+          description: >-
+            Invalid scope_type or scope_value, or a `rule_category`,
+            `rule_description` or `reason` that holds a line break or another
+            control character (each is written into a comment of the host's
+            ModSecurity file).
         '409':
           description: An exclusion with this exact scope already exists
 
@@ -9765,7 +9769,9 @@ paths:
         '400':
           description: >-
             Unparseable body, empty `host`, a `rule_id` outside 100000-999999,
-            or an invalid `scope_type`/`scope_value`.
+            an invalid `scope_type`/`scope_value`, or a `rule_category`,
+            `rule_description` or `reason` that holds a line break or another
+            control character.
           content:
             application/json:
               schema:
@@ -9922,7 +9928,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/GlobalWAFRuleExclusion'
         '400':
-          description: '`ruleId` is not an integer'
+          description: >-
+            `ruleId` is not an integer, or a `rule_category`, `rule_description`
+            or `reason` holds a line break or another control character (each is
+            written into a comment of every WAF host's ModSecurity file).
           content:
             application/json:
               schema:

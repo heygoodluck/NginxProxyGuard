@@ -344,3 +344,49 @@ func TestCloudProviderWrites_RejectRangesThatAreNotNetworks(t *testing.T) {
 	expectAccepted(t, callJSON(t, h.CreateProvider, http.MethodPost,
 		`{"name":"Custom","slug":"custom","region":"other","ip_ranges":["192.0.2.0/24"," 2001:db8::/32 "]}`))
 }
+
+// callHTTP runs a net/http handler on a JSON body at the given path.
+func callHTTP(h http.HandlerFunc, method, path, body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h(rec, req)
+	return rec
+}
+
+// A rule exclusion's description, category and reason are written into
+// comments of the ModSecurity file of the host (or of every WAF host), so each
+// must be one line, on every path that creates an exclusion.
+func TestWAFExclusionWrites_RejectTextThatIsNotOneLine(t *testing.T) {
+	const hostID = "00000000-0000-0000-0000-000000000001"
+	hostPath := "/api/v1/waf/hosts/" + hostID + "/rules/942100/disable"
+	globalPath := "/api/v1/waf/global/rules/942100/disable"
+	cases := []struct{ field, body string }{
+		{"reason", `{"reason":"first line\nsecond line"}`},
+		{"rule_description", `{"rule_description":"SQL Injection\r\nsecond line","scope_type":"uri","scope_value":"/search"}`},
+		{"rule_category", `{"rule_category":"SQLI\nsecond line","scope_type":"param","scope_value":"q"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.field, func(t *testing.T) {
+			db, _ := newMockDB(t)
+			dbw := &database.DB{DB: db}
+			h := NewWAFHandler(repository.NewWAFRepository(dbw), repository.NewProxyHostRepository(dbw), nil, nil, nil, nil)
+			expectRejected(t, callHTTP(h.DisableRule, http.MethodPost, hostPath, tc.body), tc.field)
+			expectRejected(t, callHTTP(h.DisableGlobalRule, http.MethodPost, globalPath, tc.body), tc.field)
+			byHost := `{"host":"waf.example.com","rule_id":942100,` + tc.body[1:]
+			expectRejected(t, callHTTP(h.DisableRuleByHost, http.MethodPost, "/api/v1/waf/rules/disable-by-host", byHost), tc.field)
+		})
+	}
+
+	// One line each: the request gets past the check to the database.
+	db, mock := newMockDB(t)
+	dbw := &database.DB{DB: db}
+	h := NewWAFHandler(repository.NewWAFRepository(dbw), repository.NewProxyHostRepository(dbw), nil, nil, nil, nil)
+	body := `{"rule_category":"SQLI","rule_description":"SQL Injection Attack","reason":"false positive on /search","scope_type":"uri","scope_value":"/search"}`
+	mock.ExpectQuery(`FROM waf_rule_exclusions`).WillReturnError(errStop)
+	expectAccepted(t, callHTTP(h.DisableRule, http.MethodPost, hostPath, body))
+	mock.ExpectQuery(`FROM global_waf_rule_exclusions`).WillReturnError(errStop)
+	expectAccepted(t, callHTTP(h.DisableGlobalRule, http.MethodPost, globalPath, body))
+	mock.ExpectQuery(`FROM proxy_hosts`).WillReturnError(errStop)
+	expectAccepted(t, callHTTP(h.DisableRuleByHost, http.MethodPost, "/api/v1/waf/rules/disable-by-host", `{"host":"waf.example.com","rule_id":942100,`+body[1:]))
+}

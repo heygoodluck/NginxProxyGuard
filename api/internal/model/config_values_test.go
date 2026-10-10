@@ -400,3 +400,24 @@ func TestURIBlockPatternValue(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateExclusionText(t *testing.T) {
+	if err := ValidateExclusionText("SQLI", "SQL Injection Attack Detected via libinjection", "false positive on /search (Café #2)"); err != nil {
+		t.Errorf("one-line text rejected: %v", err)
+	}
+	if err := ValidateExclusionText("", "", ""); err != nil {
+		t.Errorf("empty text rejected: %v", err)
+	}
+	for _, tc := range []struct{ category, description, reason, field string }{
+		{"SQLI\nx", "", "", "rule_category"},
+		{"", "first line\nsecond line", "", "rule_description"},
+		{"", "", "first line\r\nsecond line", "reason"},
+		{"", "", "a\u2028b", "reason"},
+		{"", "", "a\x00b", "reason"},
+	} {
+		err := ValidateExclusionText(tc.category, tc.description, tc.reason)
+		if !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), tc.field) {
+			t.Errorf("%q %q %q: got %v, want an error naming %s", tc.category, tc.description, tc.reason, err, tc.field)
+		}
+	}
+}

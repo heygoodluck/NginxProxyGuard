@@ -561,6 +561,8 @@ func GetSimpleTemplateFuncMap() template.FuncMap {
 		"joinComma": func(s []string) string {
 			return strings.Join(s, ",")
 		},
+		// Stored free text on its way into a "#" comment (render_guard.go).
+		"commentText": commentText,
 		// scopedRuleID numbers the helper rules a URI-scoped exclusion needs.
 		//
 		// ModSecurity requires every rule in a set to carry a unique id, and a

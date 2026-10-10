@@ -57,8 +57,8 @@ SecRule REMOTE_ADDR "@ipMatch {{joinComma .AllowedIPs}}" "id:900900,phase:1,pass
 {{if .Exclusions}}
 # Per-host rule exclusions
 {{range $i, $e := .Exclusions}}
-# Rule {{$e.RuleID}}: {{$e.RuleDescription}} ({{$e.RuleCategory}})
-# Reason: {{$e.Reason}}
+# Rule {{$e.RuleID}}: {{commentText $e.RuleDescription}} ({{commentText $e.RuleCategory}})
+# Reason: {{commentText $e.Reason}}
 {{- if eq $e.ScopeType "uri"}}
 # Scoped to {{$e.ScopeValue}} — matched at a path boundary, so a sibling path that
 # only shares the prefix ({{$e.ScopeValue}}-admin) keeps the rule. Matched on the

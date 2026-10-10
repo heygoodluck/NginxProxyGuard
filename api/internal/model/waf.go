@@ -190,6 +190,23 @@ func (r *CreateWAFRuleExclusionRequest) ValidateScope() error {
 	return nil
 }
 
+// ValidateExclusionText checks the free text of a rule exclusion. The rule's
+// description and category and the reason are written into "#" comments of
+// the host's ModSecurity file (of every WAF host's file, for a global
+// exclusion), and a comment ends at the line break: each must be one line.
+func ValidateExclusionText(ruleCategory, ruleDescription, reason string) error {
+	for _, f := range []struct{ name, value string }{
+		{"rule_category", ruleCategory},
+		{"rule_description", ruleDescription},
+		{"reason", reason},
+	} {
+		if err := ValidateSingleLine(f.name, f.value, 0); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // CRS rule ids are six digits. The generated per-host exclusions live at
 // 1,000,000+ (see scopedRuleID), clear of this range.
 const (

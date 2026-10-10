@@ -87,6 +87,12 @@ func (h *WAFHandler) DisableGlobalRule(w http.ResponseWriter, r *http.Request) {
 		req = model.CreateGlobalWAFRuleExclusionRequest{}
 	}
 	req.RuleID = ruleID
+	// The rule's description and category and the reason end up in comments
+	// of every WAF host's ModSecurity file, one line each.
+	if err := model.ValidateExclusionText(req.RuleCategory, req.RuleDescription, req.Reason); err != nil {
+		httpJSONError(w, trimInvalidInputPrefix(err), http.StatusBadRequest)
+		return
+	}
 
 	// Check if already globally excluded
 	existing, err := h.wafRepo.GetGlobalExclusionByRuleID(ctx, ruleID)
