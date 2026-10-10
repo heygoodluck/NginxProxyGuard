@@ -166,6 +166,8 @@ func TestWritableURIBlockRules(t *testing.T) {
 		{"id":"r4","pattern":"/b;","match_type":"exact","enabled":true},
 		{"id":"r5","pattern":"(?i)^/x(?=y)","match_type":"regex","enabled":true},
 		{"id":"r6","pattern":42,"match_type":"exact","enabled":true},
+		{"id":"r7","pattern":"\"^/[0-9]{4}/\"","match_type":"regex","enabled":true},
+		{"id":"r8","pattern":"/x { return 200; } location /y","match_type":"prefix","enabled":true},
 		"not a rule"
 	]`), &entries); err != nil {
 		t.Fatal(err)
@@ -174,8 +176,9 @@ func TestWritableURIBlockRules(t *testing.T) {
 	for _, r := range writableURIBlockRules(entries) {
 		got = append(got, r.ID+" "+r.Pattern+" "+r.Description)
 	}
-	// A PCRE-only regex an older version accepted is kept.
-	want := "r1 /admin first line second line|r2 /.env |r5 (?i)^/x(?=y) "
+	// A PCRE-only regex an older version accepted is kept, and so is a quoted
+	// one (nginx reads it as one argument).
+	want := `r1 /admin first line second line|r2 /.env |r5 (?i)^/x(?=y) |r7 "^/[0-9]{4}/" `
 	if strings.Join(got, "|") != want {
 		t.Errorf("rules = %q, want %q", strings.Join(got, "|"), want)
 	}

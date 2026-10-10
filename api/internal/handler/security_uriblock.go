@@ -319,13 +319,15 @@ func (h *SecurityHandler) RemoveGlobalURIBlockRule(c echo.Context) error {
 // validateURIBlockRule checks a rule that a request adds or changes: the
 // model's check (model.ValidateURIBlockRule, which trims the pattern), and a
 // regex must compile within the regex limits. Each rule becomes a location
-// block in the config of every host it applies to.
+// block in the config of every host it applies to. The regex compiled is the
+// one nginx reads from the pattern (model.URIBlockPatternValue), without the
+// quotes a pattern with spaces or braces is written in.
 func validateURIBlockRule(rule *model.URIBlockRule) error {
 	if err := model.ValidateURIBlockRule(rule); err != nil {
 		return errors.New(trimInvalidInputPrefix(err))
 	}
 	if rule.MatchType == model.URIMatchRegex {
-		if err := ValidateRegexPattern(rule.Pattern); err != nil {
+		if err := ValidateRegexPattern(model.URIBlockPatternValue(rule.Pattern)); err != nil {
 			return fmt.Errorf("Invalid regex pattern: %v", err)
 		}
 	}

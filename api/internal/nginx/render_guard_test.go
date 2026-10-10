@@ -3,6 +3,7 @@ package nginx
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -84,13 +85,56 @@ func TestURIBlockRulesLeaveOutPatternsThatAreNotOneToken(t *testing.T) {
 		{ID: "5", Pattern: "/x;", MatchType: model.URIMatchExact},
 		{ID: "6", Pattern: `^/\d{2}$`, MatchType: model.URIMatchRegex},
 		{ID: "7", Pattern: "", MatchType: model.URIMatchExact},
+		{ID: "8", Pattern: `"^/\d{2}$"`, MatchType: model.URIMatchRegex},
+		{ID: "9", Pattern: "/x { return 200; } location /y", MatchType: model.URIMatchPrefix},
+		{ID: "10", Pattern: "\"/a\nb\"", MatchType: model.URIMatchExact},
+		{ID: "11", Pattern: "#/a", MatchType: model.URIMatchPrefix},
 	})
 	var got []string
 	for _, r := range rules {
 		got = append(got, r.Pattern)
 	}
-	if want := `/admin|/wp-login.php|\.(sql|bak)$`; strings.Join(got, "|") != want {
+	if want := `/admin|/wp-login.php|\.(sql|bak)$|"^/\d{2}$"`; strings.Join(got, "|") != want {
 		t.Errorf("patterns = %q, want %q", strings.Join(got, "|"), want)
+	}
+}
+
+// A pattern nginx read as one location argument before the renderer checked
+// patterns is written exactly as it was. Each of these passed nginx -t then.
+func TestURIBlockPatternsNginxAcceptedRenderAsBefore(t *testing.T) {
+	patterns := []struct {
+		matchType model.URIMatchType
+		pattern   string
+	}{
+		{model.URIMatchRegex, `"^/[0-9a-f]{32}\.php$"`},
+		{model.URIMatchRegex, `'^/\d{4}/'`},
+		{model.URIMatchRegex, `"^/a b$"`},
+		{model.URIMatchRegex, `^/a\{2\}`},
+		{model.URIMatchRegex, `\.php\;`},
+		{model.URIMatchRegex, `\.php#`},
+		{model.URIMatchRegex, `/a\ b`},
+		{model.URIMatchRegex, `\.php\`},
+		{model.URIMatchPrefix, "/a}b"},
+		{model.URIMatchPrefix, "/it's"},
+		{model.URIMatchPrefix, "/x${y}"},
+		{model.URIMatchExact, `/a"b`},
+		{model.URIMatchExact, `"/a b"`},
+		{model.URIMatchPrefix, "/" + strings.Repeat("a", 4093)},
+	}
+	host := goldenBaseHost("00000000-0000-0000-0000-000000000c04", "patterns.example.com")
+	ub := &model.URIBlock{ID: "ub", ProxyHostID: host.ID, Enabled: true}
+	for i, p := range patterns {
+		ub.Rules = append(ub.Rules, model.URIBlockRule{ID: fmt.Sprint(i), Pattern: p.pattern, MatchType: p.matchType, Enabled: true})
+	}
+	var buf bytes.Buffer
+	if err := renderProxyHostConfig(context.Background(), &buf, ProxyHostConfigData{Host: host, GlobalSettings: baseGlobalSettings(), URIBlock: ub}); err != nil {
+		t.Fatal(err)
+	}
+	modifier := map[model.URIMatchType]string{model.URIMatchRegex: "~*", model.URIMatchPrefix: "^~", model.URIMatchExact: "="}
+	for _, p := range patterns {
+		if line := "    location " + modifier[p.matchType] + " " + p.pattern + " {\n"; !strings.Contains(buf.String(), line) {
+			t.Errorf("config does not hold %.80q", line)
+		}
 	}
 }
 

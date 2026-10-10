@@ -76,10 +76,3 @@ func IsIPOrCIDR(s string) bool {
 	_, _, err := net.ParseCIDR(s)
 	return err == nil
 }
-
-// trimNginxSpace trims the characters nginx's config tokenizer treats as
-// whitespace (space, tab, CR, LF), and only those: what is left is the token
-// nginx read when the value was written into a directive as it was.
-func trimNginxSpace(s string) string {
-	return strings.Trim(s, " \t\r\n")
-}

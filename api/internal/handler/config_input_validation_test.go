@@ -177,7 +177,10 @@ func TestURIBlockWrites_RejectPatternsThatAreNotOneToken(t *testing.T) {
 		{"space in path", "/a b", "prefix", "", "pattern"},
 		{"separator in path", "/a;", "exact", "", "pattern"},
 		{"brace in regex", `^/\d{2}$`, "regex", "", "pattern"},
-		{"comment sign in regex", `\.php$#`, "regex", "", "pattern"},
+		{"comment sign first in regex", `#\.php$`, "regex", "", "pattern"},
+		{"quote left open", `"^/a`, "regex", "", "pattern"},
+		{"block after the pattern", "/x { return 200; } location /y", "prefix", "", "pattern"},
+		{"regex in quotes that does not compile", `"^/a\\"`, "regex", "", "regex"},
 		{"path without slash", "wp-admin", "prefix", "", "pattern"},
 		{"unknown match type", "/a", "glob", "", "match_type"},
 		{"line break in description", "/a", "exact", "first line\nsecond line", "description"},
@@ -213,6 +216,10 @@ func TestURIBlockWrites_AcceptValidRules(t *testing.T) {
 		`{"pattern":"/wp-admin","match_type":"prefix"}`,
 		`{"pattern":" /.env ","match_type":"exact","description":"Environment file"}`,
 		`{"pattern":"\\.(sql|bak|old)$","match_type":"regex"}`,
+		// A regex with a quantifier is written in quotes, as nginx needs it;
+		// the regex inside them is the one compiled.
+		`{"pattern":"\"^/[0-9a-f]{32}\\.php$\"","match_type":"regex"}`,
+		`{"pattern":"/a#b","match_type":"prefix"}`,
 	} {
 		mock.ExpectQuery(`FROM uri_blocks WHERE proxy_host_id`).WillReturnError(errStop)
 		expectAccepted(t, callJSON(t, h.AddURIBlockRule, http.MethodPost, rule, "proxyHostId", hostID))

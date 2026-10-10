@@ -8092,11 +8092,16 @@ paths:
         is a no-op that returns the unchanged config. Returns the whole updated
         URI block. Requires the `proxy:write` scope when called with an API token.
 
-        A rule becomes an nginx location block. `match_type` must be `exact`,
+        A rule becomes an nginx location block, with the pattern written as the
+        location's argument as it is, so the pattern must be one nginx argument:
+        spaces, `;` and `{` only between double (or single) quotes around the
+        whole pattern (`"^/[0-9a-f]{32}\.php$"` for a regex with a quantifier),
+        no line break, no unclosed quote, nothing after the closing quote, and no
+        `#` or `}` as its first character. Inside an unquoted pattern, quotes,
+        `#` and `}` are ordinary characters. `match_type` must be `exact`,
         `prefix` or `regex`. An `exact` or `prefix` pattern must be a URL path
-        starting with `/` (at most 2048 bytes); a `regex` pattern must compile.
-        Neither may contain spaces, control characters, quotes, a backslash in a
-        path, or any of `; { } #` (so a regex cannot use `{n}` quantifiers).
+        starting with `/` (inside its quotes, if any) with no backslash, at most
+        2048 bytes; a `regex` pattern must compile (the regex inside its quotes).
         Surrounding spaces are trimmed. A `description` must be one line of at
         most 1000 bytes.
       security:

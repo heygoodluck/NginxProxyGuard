@@ -86,11 +86,13 @@ func accessListRules(list *model.AccessList) []model.AccessListItem {
 	return rules
 }
 
-// uriBlockRules returns the URI block rules whose pattern can be written as
-// the argument of a location directive (model.RenderableURIBlockPattern),
-// with the pattern trimmed of the whitespace nginx skipped around it anyway.
-// Any other rule is left out and logged: written as it is, its pattern would
-// have ended the location's argument early.
+// uriBlockRules returns the URI block rules whose pattern nginx reads as
+// exactly one location argument on the location's line
+// (model.RenderableURIBlockPattern, which describes where that boundary lies),
+// with the pattern trimmed of the whitespace nginx skipped around it anyway, so
+// a pattern nginx read as one argument before is written as it was. Any other
+// rule is left out and logged: written as it is, its pattern would have ended
+// the location's argument early, or run onto another line.
 func uriBlockRules(rules []model.URIBlockRule) []model.URIBlockRule {
 	out := make([]model.URIBlockRule, 0, len(rules))
 	for _, rule := range rules {

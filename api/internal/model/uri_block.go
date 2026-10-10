@@ -92,15 +92,57 @@ var CommonURIPatterns = []struct {
 }
 
 // A URI block rule becomes a location block in the config of every host it
-// applies to: "location <modifier> <pattern> {", with its description in a
-// "#" comment above it. The pattern is written as it is, as one unquoted
-// token.
+// applies to, with its description in a "#" comment above it and its pattern
+// written, as it is, as the location's argument:
+//
+//	location <modifier> <pattern> {
+//
+// nginx reads a config one argument at a time (ngx_conf_read_token), and these
+// rules decide where an argument ends:
+//
+//   - Space, tab, CR and LF separate arguments, ";" ends the directive and "{"
+//     opens its block. A backslash makes the character after it part of the
+//     argument, and so is a "{" right after a "$" ("${").
+//   - Where an argument starts, "#" starts a comment that runs to the end of
+//     the line, "}" closes the enclosing block, and a double or a single
+//     quote starts a quoted argument. Inside an unquoted argument, "#", "}"
+//     and quotes are ordinary characters.
+//   - A quoted argument ends at the next matching quote that no backslash
+//     precedes. Between the quotes, separators, ";", "{", "}" and "#" are
+//     ordinary characters, and so is a line break. Only a separator, ";" or
+//     "{" may follow the closing quote.
+//   - nginx reads an argument through a 4096-byte buffer, and nginx -t fails
+//     ("too long parameter") on an unquoted argument longer than 4094 bytes
+//     or a quoted one longer than 4095 bytes with its quotes.
+//
+// A pattern is written into the config only when nginx reads it as exactly one
+// argument on the location's line, after which the "{" the template writes
+// opens the location's block. The API refuses any other pattern as well (and
+// checks what a pattern matches, see ValidateURIBlockRule), but nothing else
+// is checked before writing, so a pattern nginx read as one argument before
+// these checks existed is still written as it was. For example,
+//
+//	kept:      /wp-admin   \.(sql|bak)$   "^/[a-z]{32}\.php$"   '^/\d{4}/'
+//	           /a}b   \.php#x   /it's   /a"b   /a\ b   \.php\;   /x${y}
+//	left out:  ^/a{2,3}$ (the "{" opens the block early), /a;b (";" ends the
+//	           directive), /a b (a second argument), #x and }x (a comment, the
+//	           end of the block), "abc (a quote left open), "a"b and "a" "b"
+//	           (more after the closing quote), an argument holding CR or LF,
+//	           even between quotes or after a backslash (it would run onto
+//	           another line), and an empty pattern (nginx would read the
+//	           modifier as the argument).
+//
+// Whitespace around the argument is not part of it and is trimmed. A trailing
+// backslash takes in the space the template writes after the pattern; the
+// block still opens where it should, so such a pattern is kept as nginx
+// accepted it before. The API refuses it on other grounds: a regex cannot end
+// in a backslash, and an exact or prefix pattern holds none.
 
 const (
-	// maxLocationPattern bounds a pattern as nginx reads it: it refuses a
-	// token of 4 KB or more ("too long parameter"). A regex is held to the
-	// handler's own, smaller limit (ValidateRegexPattern).
-	maxLocationPattern = 4000
+	// maxUnquotedLocationArg and maxQuotedLocationArg (with its two quotes)
+	// are the longest arguments nginx reads in this position.
+	maxUnquotedLocationArg = 4094
+	maxQuotedLocationArg   = 4095
 	// uriBlockMaxPathPattern bounds an exact or prefix pattern.
 	uriBlockMaxPathPattern = 2048
 	// uriBlockMaxDescription bounds a rule description, written into a "#"
@@ -109,28 +151,115 @@ const (
 	uriBlockMaxDescription = 1000
 )
 
-// RenderableURIBlockPattern returns pattern trimmed of the whitespace nginx
-// skips around a token, and whether it can be written as the argument of a
-// location directive at all: one token, not empty, with no whitespace or
-// control character, none of ; { } that end or open a directive or a block,
-// and no # or quote that would start a comment or a quoted string.
+// nginxSpace holds the characters nginx's config reader separates arguments
+// with.
+const nginxSpace = " \t\r\n"
+
+// RenderableURIBlockPattern returns the argument nginx reads from pattern
+// written as a location's argument (pattern without the whitespace around
+// it), and whether pattern is exactly that one argument, on one line (see
+// above).
 func RenderableURIBlockPattern(pattern string) (string, bool) {
-	p := trimNginxSpace(pattern)
-	if p == "" || len(p) > maxLocationPattern {
-		return p, false
+	p := strings.TrimLeft(pattern, nginxSpace)
+	if p == "" {
+		return "", false
+	}
+	end, ok := locationArgumentEnd(p)
+	arg := p[:end]
+	switch {
+	case !ok || strings.Trim(p[end:], nginxSpace) != "":
+		// It starts or ends the directive or a block, starts a comment,
+		// leaves a quote open, or something follows it on the line.
+		return strings.TrimRight(p, nginxSpace), false
+	case strings.ContainsAny(arg, "\r\n"):
+		return arg, false
+	case len(arg) > maxUnquotedLocationArg && arg[0] != '"' && arg[0] != '\'':
+		return arg, false
+	case len(arg) > maxQuotedLocationArg:
+		return arg, false
+	}
+	return arg, true
+}
+
+// locationArgumentEnd returns the length of the argument p starts with (p does
+// not start with a separator), and false when p starts with a character that
+// ends the directive, opens or closes a block or starts a comment, or opens a
+// quote it does not close. An unquoted argument ends at a separator, ";" or
+// "{"; the caller checks what follows it.
+func locationArgumentEnd(p string) (int, bool) {
+	switch q := p[0]; q {
+	case ';', '{', '}', '#':
+		return 0, false
+	case '"', '\'':
+		for i := 1; i < len(p); i++ {
+			switch p[i] {
+			case '\\':
+				i++
+			case q:
+				return i + 1, true
+			}
+		}
+		return len(p), false
 	}
 	for i := 0; i < len(p); i++ {
-		if c := p[i]; c <= ' ' || c == 0x7f || strings.IndexByte(`;{}#"'`, c) >= 0 {
-			return p, false
+		switch p[i] {
+		case '\\':
+			i++
+		case '$':
+			if i+1 < len(p) && p[i+1] == '{' {
+				i++
+			}
+		case ' ', '\t', '\r', '\n', ';', '{':
+			return i, true
 		}
 	}
-	return p, true
+	return len(p), true
+}
+
+// URIBlockPatternValue returns what nginx makes of a pattern that
+// RenderableURIBlockPattern accepts: the path or regex the location matches.
+// Quotes around it are removed, \", \' and \\ stand for the character after
+// the backslash, \t, \r and \n for a tab, CR and LF, and a backslash before
+// anything else stays.
+func URIBlockPatternValue(pattern string) string {
+	arg, _ := RenderableURIBlockPattern(pattern)
+	if n := len(arg); n >= 2 && (arg[0] == '"' || arg[0] == '\'') && arg[n-1] == arg[0] {
+		arg = arg[1 : n-1]
+	}
+	if !strings.Contains(arg, `\`) {
+		return arg
+	}
+	var b strings.Builder
+	b.Grow(len(arg))
+	for i := 0; i < len(arg); i++ {
+		c := arg[i]
+		if c == '\\' && i+1 < len(arg) {
+			switch next := arg[i+1]; next {
+			case '"', '\'', '\\':
+				c = next
+				i++
+			case 't':
+				c = '\t'
+				i++
+			case 'r':
+				c = '\r'
+				i++
+			case 'n':
+				c = '\n'
+				i++
+			}
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
 }
 
 // ValidateURIBlockRule checks a rule that a request adds or changes, after
 // trimming its pattern (which is saved trimmed). MatchType must already carry
-// the caller's default. An exact or prefix pattern must be a URL path; a regex
-// is compiled by the handler too (ValidateRegexPattern).
+// the caller's default. The pattern must be one nginx argument (see above);
+// what it matches (URIBlockPatternValue) must not be empty, an exact or prefix
+// one must be a URL path, and a regex is compiled by the handler
+// (ValidateRegexPattern).
 func ValidateURIBlockRule(rule *URIBlockRule) error {
 	switch rule.MatchType {
 	case URIMatchExact, URIMatchPrefix, URIMatchRegex:
@@ -141,7 +270,7 @@ func ValidateURIBlockRule(rule *URIBlockRule) error {
 	rule.Pattern = pattern
 	maxLen := uriBlockMaxPathPattern
 	if rule.MatchType == URIMatchRegex {
-		maxLen = maxLocationPattern
+		maxLen = maxUnquotedLocationArg
 	}
 	switch {
 	case pattern == "":
@@ -149,9 +278,14 @@ func ValidateURIBlockRule(rule *URIBlockRule) error {
 	case len(pattern) > maxLen:
 		return fmt.Errorf("%w: pattern exceeds maximum length of %d", ErrInvalidInput, maxLen)
 	case !ok:
-		return fmt.Errorf("%w: pattern %q must not contain spaces, control characters, quotes, or any of ; { } #", ErrInvalidInput, pattern)
-	case rule.MatchType != URIMatchRegex && (!strings.HasPrefix(pattern, "/") || strings.Contains(pattern, `\`)):
-		return fmt.Errorf("%w: pattern %q must be a URL path starting with / (use match_type regex for a pattern)", ErrInvalidInput, pattern)
+		return fmt.Errorf(`%w: pattern %.200q is not one nginx argument: put a pattern with spaces, ";" or "{" in double quotes, and do not start it with # or }, leave a quote open or break the line`, ErrInvalidInput, pattern)
+	}
+	value := URIBlockPatternValue(pattern)
+	switch {
+	case value == "":
+		return fmt.Errorf("%w: pattern is required", ErrInvalidInput)
+	case rule.MatchType != URIMatchRegex && (!strings.HasPrefix(value, "/") || strings.Contains(pattern, `\`)):
+		return fmt.Errorf("%w: pattern %.200q must be a URL path starting with / (use match_type regex for a pattern)", ErrInvalidInput, pattern)
 	}
 	return ValidateSingleLine("description", rule.Description, uriBlockMaxDescription)
 }

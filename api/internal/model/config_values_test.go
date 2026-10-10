@@ -243,6 +243,27 @@ func TestValidateURIBlockRule_AcceptsCommonPatterns(t *testing.T) {
 	if err := ValidateURIBlockRule(&rule); err != nil || rule.Pattern != "/admin" {
 		t.Errorf("got %v, pattern %q; want it trimmed and accepted", err, rule.Pattern)
 	}
+
+	// Patterns nginx reads as one location argument, saved as they are.
+	for _, rule := range []URIBlockRule{
+		{Pattern: `"^/[0-9a-f]{32}\.php$"`, MatchType: URIMatchRegex},
+		{Pattern: `'^/\d{4}/'`, MatchType: URIMatchRegex},
+		{Pattern: `^/a\{2\}`, MatchType: URIMatchRegex},
+		{Pattern: `\.php\;`, MatchType: URIMatchRegex},
+		{Pattern: `\.php#`, MatchType: URIMatchRegex},
+		{Pattern: `"^/a b$"`, MatchType: URIMatchRegex},
+		{Pattern: "/a#b", MatchType: URIMatchPrefix},
+		{Pattern: "/a}b", MatchType: URIMatchPrefix},
+		{Pattern: `/a"b`, MatchType: URIMatchExact},
+		{Pattern: "/it's", MatchType: URIMatchPrefix},
+		{Pattern: `"/a b"`, MatchType: URIMatchExact},
+		{Pattern: "/x${y}", MatchType: URIMatchPrefix},
+	} {
+		want := rule.Pattern
+		if err := ValidateURIBlockRule(&rule); err != nil || rule.Pattern != want {
+			t.Errorf("pattern %q: got %v, saved as %q", want, err, rule.Pattern)
+		}
+	}
 }
 
 func TestValidateURIBlockRule_RejectsAPatternThatIsNotOneToken(t *testing.T) {
@@ -253,18 +274,26 @@ func TestValidateURIBlockRule_RejectsAPatternThatIsNotOneToken(t *testing.T) {
 	}{
 		{"unknown match type", URIBlockRule{Pattern: "/a", MatchType: "glob"}, "match_type"},
 		{"empty pattern", URIBlockRule{Pattern: " ", MatchType: URIMatchExact}, "pattern"},
+		{"empty quoted pattern", URIBlockRule{Pattern: `""`, MatchType: URIMatchRegex}, "pattern"},
 		{"space in path", URIBlockRule{Pattern: "/a b", MatchType: URIMatchPrefix}, "pattern"},
 		{"separator in path", URIBlockRule{Pattern: "/a;", MatchType: URIMatchExact}, "pattern"},
 		{"brace in path", URIBlockRule{Pattern: "/a{", MatchType: URIMatchPrefix}, "pattern"},
-		{"comment sign in path", URIBlockRule{Pattern: "/a#b", MatchType: URIMatchPrefix}, "pattern"},
-		{"quote in path", URIBlockRule{Pattern: `/a"b`, MatchType: URIMatchExact}, "pattern"},
+		{"comment sign first", URIBlockRule{Pattern: `#\.php$`, MatchType: URIMatchRegex}, "pattern"},
+		{"closing brace first", URIBlockRule{Pattern: "}/a", MatchType: URIMatchRegex}, "pattern"},
+		{"quote left open", URIBlockRule{Pattern: `"^/a`, MatchType: URIMatchRegex}, "pattern"},
+		{"escaped closing quote", URIBlockRule{Pattern: `"^/a\"`, MatchType: URIMatchRegex}, "pattern"},
+		{"text after the closing quote", URIBlockRule{Pattern: `"^/a"b`, MatchType: URIMatchRegex}, "pattern"},
+		{"block after the pattern", URIBlockRule{Pattern: "/x { return 200; } location /y", MatchType: URIMatchPrefix}, "pattern"},
 		{"line break in path", URIBlockRule{Pattern: "/a\n/b", MatchType: URIMatchExact}, "pattern"},
+		{"line break in quotes", URIBlockRule{Pattern: "\"^/a\nb\"", MatchType: URIMatchRegex}, "pattern"},
+		{"escaped line break", URIBlockRule{Pattern: "/a\\\nb", MatchType: URIMatchPrefix}, "pattern"},
 		{"path without slash", URIBlockRule{Pattern: "wp-admin", MatchType: URIMatchPrefix}, "pattern"},
+		{"quoted path without slash", URIBlockRule{Pattern: `"wp admin"`, MatchType: URIMatchPrefix}, "pattern"},
 		{"backslash in path", URIBlockRule{Pattern: `/a\b`, MatchType: URIMatchExact}, "pattern"},
 		{"long path", URIBlockRule{Pattern: "/" + strings.Repeat("a", uriBlockMaxPathPattern), MatchType: URIMatchPrefix}, "pattern"},
 		{"space in regex", URIBlockRule{Pattern: `\.php$ x`, MatchType: URIMatchRegex}, "pattern"},
 		{"separator in regex", URIBlockRule{Pattern: `\.php$;`, MatchType: URIMatchRegex}, "pattern"},
-		{"quantifier braces in regex", URIBlockRule{Pattern: `^/\d{2}$`, MatchType: URIMatchRegex}, "pattern"},
+		{"quantifier braces outside quotes", URIBlockRule{Pattern: `^/\d{2}$`, MatchType: URIMatchRegex}, "double quotes"},
 		{"line break in description", URIBlockRule{Pattern: "/a", MatchType: URIMatchExact, Description: "a\nb"}, "description"},
 		{"long description", URIBlockRule{Pattern: "/a", MatchType: URIMatchExact, Description: strings.Repeat("d", uriBlockMaxDescription+1)}, "description"},
 	}
@@ -279,22 +308,76 @@ func TestValidateURIBlockRule_RejectsAPatternThatIsNotOneToken(t *testing.T) {
 	}
 }
 
+// The boundary RenderableURIBlockPattern draws is the one nginx -t draws for
+// "location <modifier> <pattern> {": each kept pattern below was checked with
+// nginx -t, written as it is, and each pattern left out is not one argument on
+// that line (or is longer than nginx reads).
 func TestRenderableURIBlockPattern(t *testing.T) {
 	for in, want := range map[string]string{
-		"/admin":       "/admin",
-		" /admin\t":    "/admin",
-		`\.(sql|bak)$`: `\.(sql|bak)$`,
-		"wp-admin":     "wp-admin", // useless, but one token
-		`(?i)^/x(?=y)`: `(?i)^/x(?=y)`,
-		"/café/été":    "/café/été",
+		"/admin":                              "/admin",
+		" /admin\t":                           "/admin",
+		"\t/admin\r\n":                        "/admin",
+		`\.(sql|bak)$`:                        `\.(sql|bak)$`,
+		"wp-admin":                            "wp-admin", // useless, but one argument
+		`(?i)^/x(?=y)`:                        `(?i)^/x(?=y)`,
+		"/café/été":                           "/café/été",
+		"/a\u2028b":                           "/a\u2028b", // not a line break to nginx
+		`"^/a{2,3}$"`:                         `"^/a{2,3}$"`,
+		`'^/[0-9]{4}/'`:                       `'^/[0-9]{4}/'`,
+		`"^/a b$"`:                            `"^/a b$"`,
+		"\"a\tb\"":                            "\"a\tb\"",
+		`"a\"b"`:                              `"a\"b"`,
+		`"#x"`:                                `"#x"`,
+		`""`:                                  `""`, // one argument, empty (the API refuses it)
+		`^/a\{2\}`:                            `^/a\{2\}`,
+		`\.php\;`:                             `\.php\;`,
+		`/a\ b`:                               `/a\ b`,
+		`\.php\ `:                             `\.php\ `, // the escaped space is part of it
+		`\.php\`:                              `\.php\`,  // takes in the separator after it
+		"/x${y}":                              "/x${y}",
+		`/a"b`:                                `/a"b`,
+		"/it's":                               "/it's",
+		`\.php#`:                              `\.php#`,
+		"/a}b":                                "/a}b",
+		"$x":                                  "$x",
+		"=/x":                                 "=/x",
+		"/" + strings.Repeat("a", 4093):       "/" + strings.Repeat("a", 4093),
+		`"` + strings.Repeat("a", 4093) + `"`: `"` + strings.Repeat("a", 4093) + `"`,
 	} {
 		if got, ok := RenderableURIBlockPattern(in); !ok || got != want {
 			t.Errorf("RenderableURIBlockPattern(%q) = %q, %v; want %q, true", in, got, ok, want)
 		}
 	}
-	for _, in := range []string{"", "  ", "/a b", "/a;", "/a{", "/a}", "/a#", `/a"`, "/a'", "/a\nb", "/a\x00", strings.Repeat("a", maxLocationPattern+1)} {
+	for _, in := range []string{
+		"", "  ", "/a b", "/a\tb", "/a\rb", "/a;", ";x", "/a{", "{x", `^/a{2,3}$`, "}x", "#x", "/a #b",
+		`"abc`, `'abc`, `"abc\"`, `"abc"def`, `"abc" "def"`, `"abc";`,
+		"/a\nb", "\"a\nb\"", "\"a\rb\"", "/a\\\nb", "/x${;",
+		"/x { return 200; } location /y", "/x {} location = /y",
+		"/" + strings.Repeat("a", 4094), `"` + strings.Repeat("a", 4094) + `"`,
+	} {
 		if _, ok := RenderableURIBlockPattern(in); ok {
 			t.Errorf("RenderableURIBlockPattern(%q) accepted", in)
+		}
+	}
+}
+
+func TestURIBlockPatternValue(t *testing.T) {
+	for in, want := range map[string]string{
+		"/admin":      "/admin",
+		" /admin ":    "/admin",
+		`"^/a{2,3}$"`: "^/a{2,3}$",
+		`'^/a b$'`:    "^/a b$",
+		`"a\"b"`:      `a"b`,
+		`a\\.b`:       `a\.b`,
+		`\.php$`:      `\.php$`,
+		`a\tb`:        "a\tb",
+		`"\d+\n"`:     "\\d+\n",
+		`'it\'s'`:     "it's",
+		`/a"b`:        `/a"b`,
+		`""`:          "",
+	} {
+		if got := URIBlockPatternValue(in); got != want {
+			t.Errorf("URIBlockPatternValue(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
