@@ -180,6 +180,62 @@ func renderableAllowedIPs(hostID string, ips []string) []string {
 	return out
 }
 
+// renderableBans returns the bans whose address, without the whitespace
+// around it, is an IP address or a CIDR range, with the address written that
+// way. Each address is the network of a line in the host's banned-IP geo
+// block. Any other ban is left out and logged: nginx did not read it as one
+// network, so it either failed nginx -t for every host the ban covers ("all",
+// which the API accepts, or an address with a quote or a ";" in it), or the
+// rest of it was read as more of the geo block, or of the config after it.
+func renderableBans(bans []model.BannedIP) []model.BannedIP {
+	out := bans[:0:0]
+	for _, ban := range bans {
+		address := strings.TrimSpace(ban.IPAddress)
+		if !model.IsIPOrCIDR(address) {
+			warnSkippedOnce("ban "+ban.ID+" "+ban.IPAddress,
+				"[WARN] Ban %s: address %.60q is not an IP address or CIDR range, so it is left out of the nginx config. Unban it, and ban the address again if it is still needed.",
+				ban.ID, ban.IPAddress)
+			continue
+		}
+		ban.IPAddress = address
+		out = append(out, ban)
+	}
+	return out
+}
+
+// renderableURIBlock returns ub with the exception IPs that, without the
+// whitespace around them, are an IP address or a CIDR range, written that
+// way, and ub itself when every one already is. ub holds the exception IPs of
+// the host's URI block and of the global one, and each is written into the
+// quoted argument of an if condition in every URI block location: compared
+// with $remote_addr, or turned into a regex when it holds a "/". Any other
+// entry is left out and logged. It named no client's address: compared, it
+// matched none, a quote in it ended the argument, and as a regex it could
+// match clients it does not name. An entry with spaces around it, which the
+// API accepts, never matched; written without them now, it does.
+func renderableURIBlock(hostID string, ub *model.URIBlock) *model.URIBlock {
+	if ub == nil {
+		return nil
+	}
+	ips := ub.ExceptionIPs[:0:0]
+	for _, ip := range ub.ExceptionIPs {
+		trimmed := strings.TrimSpace(ip)
+		if !model.IsIPOrCIDR(trimmed) {
+			warnSkippedOnce("uri block exception ip "+hostID+" "+ip,
+				"[WARN] Host %s: URI block exception IP %.60q is not an IP address or CIDR range, so it is left out of the nginx config. Edit the exception IPs of the host's URI block, or of the global URI block, to correct or remove it.",
+				hostID, ip)
+			continue
+		}
+		ips = append(ips, trimmed)
+	}
+	if slices.Equal(ips, ub.ExceptionIPs) {
+		return ub
+	}
+	block := *ub
+	block.ExceptionIPs = ips
+	return &block
+}
+
 // skippedWarned holds the values already named in a warning above, so each is
 // logged once per process rather than at every regeneration.
 var skippedWarned sync.Map

@@ -156,6 +156,63 @@ func TestRenderableGeoKeepsValidEntriesAsTheyAre(t *testing.T) {
 	}
 }
 
+func TestRenderableBansLeaveOutAddressesThatAreNotIPs(t *testing.T) {
+	bans := []model.BannedIP{
+		{ID: "1", IPAddress: "203.0.113.10"},
+		{ID: "2", IPAddress: "198.51.100.0/24"},
+		{ID: "3", IPAddress: "2001:db8::1"},
+		{ID: "4", IPAddress: "::ffff:192.0.2.1"},
+		{ID: "5", IPAddress: " 203.0.113.11 "},
+		{ID: "6", IPAddress: "all"},
+		{ID: "7", IPAddress: "203.0.113.12 1;"},
+		{ID: "8", IPAddress: "203.0.113.13\nsecond line"},
+		{ID: "9", IPAddress: "example.com"},
+		{ID: "10", IPAddress: ""},
+	}
+	var got []string
+	for _, b := range renderableBans(bans) {
+		got = append(got, b.ID+" "+b.IPAddress)
+	}
+	if want := "1 203.0.113.10|2 198.51.100.0/24|3 2001:db8::1|4 ::ffff:192.0.2.1|5 203.0.113.11"; strings.Join(got, "|") != want {
+		t.Errorf("bans = %q, want %q", strings.Join(got, "|"), want)
+	}
+	if bans[4].IPAddress != " 203.0.113.11 " {
+		t.Error("renderableBans changed the stored bans")
+	}
+	if len(renderableBans([]model.BannedIP{{ID: "x", IPAddress: "all"}})) != 0 {
+		t.Error("a ban that is not an IP address was kept")
+	}
+}
+
+func TestRenderableURIBlockKeepsOnlyAddressesAsExceptionIPs(t *testing.T) {
+	ub := &model.URIBlock{Enabled: true, ExceptionIPs: []string{"192.0.2.10", "198.51.100.0/24", "2001:db8::/32"}}
+	if renderableURIBlock("h", ub) != ub {
+		t.Error("a block with only usable exception IPs was copied")
+	}
+	stored := &model.URIBlock{
+		Enabled: true,
+		Rules:   []model.URIBlockRule{{ID: "r", Pattern: "/admin", MatchType: model.URIMatchPrefix, Enabled: true}},
+		ExceptionIPs: []string{
+			"192.0.2.10", " 192.0.2.11", `192.0.2.12"`, "192.0.2.13 second line", "192.0.2.14\nsecond line", "all", "example.com",
+		},
+	}
+	got := renderableURIBlock("h", stored)
+	if strings.Join(got.ExceptionIPs, ",") != "192.0.2.10,192.0.2.11" || len(got.Rules) != 1 || !got.Enabled {
+		t.Errorf("got exception IPs %q, %d rules, enabled %v", got.ExceptionIPs, len(got.Rules), got.Enabled)
+	}
+	if stored.ExceptionIPs[1] != " 192.0.2.11" || len(stored.ExceptionIPs) != 7 {
+		t.Error("renderableURIBlock changed the stored block")
+	}
+	// Nothing usable: the template then renders the rules without an
+	// exception check, unless private ranges are allowed.
+	if none := renderableURIBlock("h", &model.URIBlock{Enabled: true, ExceptionIPs: []string{"all"}}); len(none.ExceptionIPs) != 0 {
+		t.Errorf("exception IPs %q kept", none.ExceptionIPs)
+	}
+	if renderableURIBlock("h", nil) != nil {
+		t.Error("an absent URI block must stay absent")
+	}
+}
+
 // Every country code and priority allow entry a geo restriction can have been
 // saved with still reaches the config after the API started checking them:
 // two letters in any case (written in upper case, the case the GeoIP lookup
@@ -274,6 +331,11 @@ func storedValuesFixture(clean bool) ProxyHostConfigData {
 		)
 	}
 
+	exceptionIPs := []string{"192.0.2.20", pick(" 192.0.2.0/24", "192.0.2.0/24")}
+	if !clean {
+		exceptionIPs = append(exceptionIPs, `192.0.2.21"`, "192.0.2.22 second line", "192.0.2.23\nsecond line", "all")
+	}
+
 	countries := []string{"CN"}
 	allowed := []string{"192.0.2.10"}
 	if !clean {
@@ -292,6 +354,18 @@ func storedValuesFixture(clean bool) ProxyHostConfigData {
 		}
 	}
 	hostID := host.ID
+	bans := []model.BannedIP{
+		{ID: "b1", ProxyHostID: &hostID, IPAddress: "203.0.113.10", Reason: pick("first line\r\nsecond line", "first line second line")},
+		{ID: "b2", IPAddress: pick(" 198.51.100.0/24 ", "198.51.100.0/24")},
+	}
+	if !clean {
+		bans = append(bans,
+			model.BannedIP{ID: "b3", IPAddress: "203.0.113.11 second line"},
+			model.BannedIP{ID: "b4", IPAddress: "203.0.113.12\nsecond line"},
+			model.BannedIP{ID: "b5", IPAddress: "203.0.113.13;"},
+			model.BannedIP{ID: "b6", IPAddress: "all"},
+		)
+	}
 
 	return ProxyHostConfigData{
 		Host:           host,
@@ -301,16 +375,14 @@ func storedValuesFixture(clean bool) ProxyHostConfigData {
 			Name:  pick("first line\nsecond line", "first line second line"),
 			Items: items,
 		},
-		BannedIPs: []model.BannedIP{
-			{ID: "b1", ProxyHostID: &hostID, IPAddress: "203.0.113.10", Reason: pick("first line\r\nsecond line", "first line second line")},
-		},
+		BannedIPs: bans,
 		ExploitBlockRules: []model.ExploitBlockRuleForRender{
 			exploitRule("e1", "query_string"),
 			exploitRule("e2", "request_uri"),
 			exploitRule("e3", "user_agent"),
 			exploitRule("e4", "request_method"),
 		},
-		URIBlock: &model.URIBlock{ID: "ub", ProxyHostID: host.ID, Enabled: true, Rules: uriRules},
+		URIBlock: &model.URIBlock{ID: "ub", ProxyHostID: host.ID, Enabled: true, Rules: uriRules, ExceptionIPs: exceptionIPs},
 		GeoRestriction: &model.GeoRestriction{
 			ID: "g1", ProxyHostID: host.ID, Mode: "blacklist", Enabled: true,
 			Countries: countries, AllowedIPs: allowed,
@@ -352,8 +424,11 @@ func TestStoredValuesRenderAsTheirCleanedForm(t *testing.T) {
 		"# Access List: first line second line\n",
 		"    allow 192.0.2.0/24; # first line second line\n",
 		"    203.0.113.10 1; # first line second line\n",
+		"    198.51.100.0/24 1; #",
 		"    # first line second line (custom second line)\n",
 		"    # Block: first line second line\n    location ^~ /admin {",
+		"if ($remote_addr = \"192.0.2.20\") {\n            set $uri_block_exception 1;",
+		"if ($remote_addr ~ \"" + cidrToNginxPattern("192.0.2.0/24") + "\") {\n            set $uri_block_exception 1;",
 		`if ($geoip2_country_code ~ "^(CN)$")`,
 		`if ($remote_addr = "192.0.2.10")`,
 		`add_header Content-Security-Policy "default-src 'self' second line" always;`,
@@ -366,6 +441,39 @@ func TestStoredValuesRenderAsTheirCleanedForm(t *testing.T) {
 	// One per pattern type, in each of the HTTP and HTTPS server blocks.
 	if n := strings.Count(out, "    # first line second line (custom second line)\n"); n != 8 {
 		t.Errorf("rule name comment rendered %d times, want 8", n)
+	}
+}
+
+// GenerateConfigFull, which writes every proxy host config, cleans the stored
+// values itself: the file it writes from them is the one it writes from their
+// cleaned form.
+func TestGenerateConfigFullWritesStoredValuesAsTheirCleanedForm(t *testing.T) {
+	write := func(data ProxyHostConfigData) []byte {
+		t.Helper()
+		m, _ := newRequestPathTestManager(t)
+		// The certificate file must exist, or the HTTPS server block is left out.
+		certDir := filepath.Join(m.certsPath, *data.Host.CertificateID)
+		if err := os.MkdirAll(certDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(certDir, "fullchain.pem"), nil, 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := m.GenerateConfigFull(context.Background(), data); err != nil {
+			t.Fatalf("GenerateConfigFull: %v", err)
+		}
+		b, err := os.ReadFile(filepath.Join(m.configPath, GetConfigFilename(data.Host)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	stored, cleaned := write(storedValuesFixture(false)), write(storedValuesFixture(true))
+	if !bytes.Equal(stored, cleaned) {
+		t.Errorf("stored values are written differently from their cleaned form\n%s", diffPreview(cleaned, stored))
+	}
+	if !bytes.Contains(stored, []byte("listen 443 ssl")) {
+		t.Error("the HTTPS server block was not written")
 	}
 }
 

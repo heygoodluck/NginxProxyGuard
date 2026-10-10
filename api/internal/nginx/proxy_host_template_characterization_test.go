@@ -46,6 +46,8 @@ func renderProxyHostConfig(_ context.Context, w *bytes.Buffer, data ProxyHostCon
 	}
 	if data.Host != nil {
 		data.GeoRestriction = renderableGeo(data.Host.ID, data.GeoRestriction)
+		data.BannedIPs = renderableBans(data.BannedIPs)
+		data.URIBlock = renderableURIBlock(data.Host.ID, data.URIBlock)
 	}
 
 	apiHostValue := "127.0.0.1:9080"
