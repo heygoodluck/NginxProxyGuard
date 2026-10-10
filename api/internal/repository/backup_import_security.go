@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"log"
+	"strings"
 
 	"github.com/lib/pq"
 	"nginx-proxy-guard/internal/model"
@@ -41,9 +42,16 @@ func (r *BackupRepository) importAccessList(ctx context.Context, tx *sql.Tx, al 
 		RETURNING id
 	`
 
+	// The list is written into the nginx config of each host using it: the
+	// name as a comment, each rule as an allow/deny line with its description
+	// as a comment. The backup file is checked as the API checks a request:
+	// text is folded onto one line, and a rule that is not allow/deny with an
+	// IP address, a CIDR range or "all" is left out — nginx would refuse the
+	// config of every host using the list, and failing the restore would roll
+	// back everything else in it.
 	var newID string
 	err := tx.QueryRowContext(ctx, query,
-		al.AccessList.Name, al.AccessList.Description, al.AccessList.SatisfyAny, al.AccessList.PassAuth,
+		model.SingleLine(al.AccessList.Name), model.SingleLine(al.AccessList.Description), al.AccessList.SatisfyAny, al.AccessList.PassAuth,
 	).Scan(&newID)
 	if err != nil {
 		return "", err
@@ -51,11 +59,16 @@ func (r *BackupRepository) importAccessList(ctx context.Context, tx *sql.Tx, al 
 
 	// Import access list items
 	for _, item := range al.AccessList.Items {
+		address := strings.TrimSpace(item.Address)
+		if !model.IsAccessListDirective(item.Directive) || !model.IsAccessListAddress(address) {
+			log.Printf("[Backup] Skipped a rule of access list %.80q: %.20q %.60q is not \"allow\" or \"deny\" with an IP address, a CIDR range or \"all\". Add it again if it is still needed.", model.SingleLine(al.AccessList.Name), item.Directive, item.Address)
+			continue
+		}
 		itemQuery := `
 			INSERT INTO access_list_items (access_list_id, directive, address, description, sort_order)
 			VALUES ($1, $2, $3, $4, $5)
 		`
-		_, err = tx.ExecContext(ctx, itemQuery, newID, item.Directive, item.Address, item.Description, item.SortOrder)
+		_, err = tx.ExecContext(ctx, itemQuery, newID, item.Directive, address, model.SingleLine(item.Description), item.SortOrder)
 		if err != nil {
 			return "", err
 		}
@@ -128,13 +141,15 @@ func (r *BackupRepository) importBannedIP(ctx context.Context, tx *sql.Tx, bip *
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 	`
 
-	_, err := tx.ExecContext(ctx, query, proxyHostID, bip.IPAddress, bip.Reason, bip.FailCount,
+	// The reason is written as a comment after the address in the config of
+	// every host the ban covers, so it is kept on one line.
+	_, err := tx.ExecContext(ctx, query, proxyHostID, bip.IPAddress, model.SingleLine(bip.Reason), bip.FailCount,
 		bip.BannedAt, bip.ExpiresAt, bip.IsPermanent, bip.IsAutoBanned)
 	return err
 }
 
 func (r *BackupRepository) importURIBlock(ctx context.Context, tx *sql.Tx, ub *model.URIBlockExport) error {
-	rulesJSON, _ := json.Marshal(ub.Rules)
+	rulesJSON, _ := json.Marshal(writableURIBlockRules(ub.Rules))
 
 	query := `
 		INSERT INTO uri_blocks (proxy_host_id, enabled, rules, exception_ips, allow_private_ips)
@@ -152,7 +167,7 @@ func (r *BackupRepository) importURIBlock(ctx context.Context, tx *sql.Tx, ub *m
 }
 
 func (r *BackupRepository) importGlobalURIBlock(ctx context.Context, tx *sql.Tx, ub *model.GlobalURIBlockExport) error {
-	rulesJSON, _ := json.Marshal(ub.Rules)
+	rulesJSON, _ := json.Marshal(writableURIBlockRules(ub.Rules))
 
 	// Delete existing and insert new
 	_, _ = tx.ExecContext(ctx, "DELETE FROM global_uri_blocks")
@@ -166,6 +181,40 @@ func (r *BackupRepository) importGlobalURIBlock(ctx context.Context, tx *sql.Tx,
 	return err
 }
 
+// writableURIBlockRules returns the URI block rules of a backup whose pattern
+// can be written as the argument of a location directive, each pattern
+// trimmed and each description folded onto one line. Any other rule, and an
+// entry that is not a rule at all, is left out and logged: the config
+// generator would leave it out anyway, and only a hand-edited or damaged file
+// holds one. Nothing else is checked, so a rule an older version accepted (a
+// PCRE-only regex, say) is restored as it was.
+func writableURIBlockRules(rules []interface{}) []model.URIBlockRule {
+	if rules == nil {
+		return nil
+	}
+	out := make([]model.URIBlockRule, 0, len(rules))
+	for _, entry := range rules {
+		var rule model.URIBlockRule
+		raw, err := json.Marshal(entry)
+		if err == nil {
+			err = json.Unmarshal(raw, &rule)
+		}
+		if err != nil {
+			log.Printf("[Backup] Skipped a URI block entry that is not a rule: %v", err)
+			continue
+		}
+		pattern, ok := model.RenderableURIBlockPattern(rule.Pattern)
+		if !ok {
+			log.Printf("[Backup] Skipped URI block rule %.200q: it cannot be written as an nginx location. Add it again if it is still needed.", rule.Pattern)
+			continue
+		}
+		rule.Pattern = pattern
+		rule.Description = model.SingleLine(rule.Description)
+		out = append(out, rule)
+	}
+	return out
+}
+
 // importGlobalGeo restores the singleton global geo default (#198). Delete-then-
 // insert so the singleton stays unique.
 func (r *BackupRepository) importGlobalGeo(ctx context.Context, tx *sql.Tx, g *model.GlobalGeoRestrictionExport) error {
@@ -175,11 +224,17 @@ func (r *BackupRepository) importGlobalGeo(ctx context.Context, tx *sql.Tx, g *m
 	if mode != "whitelist" && mode != "blacklist" {
 		mode = "blacklist"
 	}
+	// Countries and priority allow entries are written into the config of
+	// every inheriting host; keep the ones the API would accept.
+	countries, allowedIPs, dropped := model.UsableGeoLists(g.Countries, g.AllowedIPs)
+	if len(dropped) > 0 {
+		log.Printf("[Backup] Global geo restriction: skipped %d entr(ies) that are not a country code or an IP address/CIDR range (first: %.60q)", len(dropped), dropped[0])
+	}
 	query := `
 		INSERT INTO global_geo_restrictions (enabled, mode, countries, allowed_ips, allow_private_ips, allow_search_bots, challenge_mode)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 	`
-	_, err := tx.ExecContext(ctx, query, g.Enabled, mode, pq.Array(g.Countries), pq.Array(g.AllowedIPs), g.AllowPrivateIPs, g.AllowSearchBots, g.ChallengeMode)
+	_, err := tx.ExecContext(ctx, query, g.Enabled, mode, pq.Array(countries), pq.Array(allowedIPs), g.AllowPrivateIPs, g.AllowSearchBots, g.ChallengeMode)
 	return err
 }
 
@@ -204,6 +259,10 @@ func (r *BackupRepository) importGlobalSecurityHeaders(ctx context.Context, tx *
 	customHeaders, _ := json.Marshal(g.CustomHeaders)
 	if len(g.CustomHeaders) == 0 {
 		customHeaders = []byte("{}")
+	}
+	// Each value goes into an add_header directive of every inheriting host.
+	if reset := model.ResetUnusableSecurityHeaderValues(&g.XFrameOptions, &g.ReferrerPolicy, &g.ContentSecurityPolicy, &g.PermissionsPolicy); len(reset) > 0 {
+		log.Printf("[Backup] Global security headers: %s could not be used as saved and were restored with their defaults", strings.Join(reset, ", "))
 	}
 	query := `
 		INSERT INTO global_security_headers (enabled, hsts_enabled, hsts_max_age, hsts_include_subdomains, hsts_preload,
@@ -385,8 +444,10 @@ func (r *BackupRepository) importExploitBlockRule(ctx context.Context, tx *sql.T
 		VALUES ($1, $2, $3, $4, $5, $6, $7, false)
 		RETURNING id
 	`
+	// The name is written as a comment in the config of every host with Block
+	// Exploits on, so it is kept on one line.
 	var newID string
-	err := tx.QueryRowContext(ctx, query, rule.Name, rule.Category, rule.Pattern, rule.PatternType,
+	err := tx.QueryRowContext(ctx, query, model.SingleLine(rule.Name), rule.Category, rule.Pattern, rule.PatternType,
 		rule.Description, rule.Severity, rule.Enabled).Scan(&newID)
 	return newID, err
 }

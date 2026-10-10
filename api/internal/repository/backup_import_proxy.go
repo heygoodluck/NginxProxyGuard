@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 
 	"github.com/lib/pq"
 	"nginx-proxy-guard/internal/model"
@@ -288,6 +289,11 @@ func (r *BackupRepository) importBotFilter(ctx context.Context, tx *sql.Tx, prox
 func (r *BackupRepository) importSecurityHeaders(ctx context.Context, tx *sql.Tx, proxyHostID string, sh *model.SecurityHeadersExport) error {
 	customHeaders, _ := json.Marshal(sh.CustomHeaders)
 
+	// Each value goes into an add_header directive of the host's config.
+	if reset := model.ResetUnusableSecurityHeaderValues(&sh.XFrameOptions, &sh.ReferrerPolicy, &sh.ContentSecurityPolicy, &sh.PermissionsPolicy); len(reset) > 0 {
+		log.Printf("[Backup] Security headers of proxy host %s: %s could not be used as saved and were restored with their defaults", proxyHostID, strings.Join(reset, ", "))
+	}
+
 	query := `
 		INSERT INTO security_headers (proxy_host_id, enabled, hsts_enabled, hsts_max_age,
 		                              hsts_include_subdomains, hsts_preload, x_frame_options,
@@ -321,8 +327,13 @@ func (r *BackupRepository) importGeoRestriction(ctx context.Context, tx *sql.Tx,
 			cloud_disable_global = EXCLUDED.cloud_disable_global,
 			updated_at = NOW()
 	`
+	// Countries and priority allow entries are written into the host's
+	// config; keep the ones the API would accept.
+	countries, allowedIPs, dropped := model.UsableGeoLists(gr.Countries, gr.AllowedIPs)
+	if len(dropped) > 0 {
+		log.Printf("[Backup] Geo restriction of proxy host %s: skipped %d entr(ies) that are not a country code or an IP address/CIDR range (first: %.60q)", proxyHostID, len(dropped), dropped[0])
+	}
 	// Ensure arrays are not nil for postgres
-	allowedIPs := gr.AllowedIPs
 	if allowedIPs == nil {
 		allowedIPs = []string{}
 	}
@@ -330,7 +341,7 @@ func (r *BackupRepository) importGeoRestriction(ctx context.Context, tx *sql.Tx,
 	if blockedCloudProviders == nil {
 		blockedCloudProviders = []string{}
 	}
-	_, err := tx.ExecContext(ctx, query, proxyHostID, gr.Mode, pq.Array(gr.Countries), gr.Enabled,
+	_, err := tx.ExecContext(ctx, query, proxyHostID, gr.Mode, pq.Array(countries), gr.Enabled,
 		gr.ChallengeMode, gr.AllowPrivateIPs, gr.AllowSearchBots,
 		pq.Array(allowedIPs), pq.Array(blockedCloudProviders),
 		gr.ChallengeCloudProviders, gr.AllowSearchBotsCloudProviders, gr.DisableGlobal, gr.CloudDisableGlobal)
