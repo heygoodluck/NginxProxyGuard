@@ -46,9 +46,12 @@ func (r *BackupRepository) importAccessList(ctx context.Context, tx *sql.Tx, al 
 	// name as a comment, each rule as an allow/deny line with its description
 	// as a comment. The backup file is checked as the API checks a request:
 	// text is folded onto one line, and a rule that is not allow/deny with an
-	// IP address, a CIDR range or "all" is left out — nginx would refuse the
-	// config of every host using the list, and failing the restore would roll
-	// back everything else in it.
+	// IP address, a CIDR range or "all" is not restored as it is — nginx would
+	// refuse the config of every host using the list, and failing the restore
+	// would roll back everything else in it. Such a rule fails closed, as the
+	// renderer's accessListRules does: an allow is left out, anything else is
+	// restored as "deny all" in its place, so an allow after it cannot admit
+	// the address it was meant to stop.
 	var newID string
 	err := tx.QueryRowContext(ctx, query,
 		model.SingleLine(al.AccessList.Name), model.SingleLine(al.AccessList.Description), al.AccessList.SatisfyAny, al.AccessList.PassAuth,
@@ -59,16 +62,21 @@ func (r *BackupRepository) importAccessList(ctx context.Context, tx *sql.Tx, al 
 
 	// Import access list items
 	for _, item := range al.AccessList.Items {
+		directive := item.Directive
 		address := strings.TrimSpace(item.Address)
-		if !model.IsAccessListDirective(item.Directive) || !model.IsAccessListAddress(address) {
-			log.Printf("[Backup] Skipped a rule of access list %.80q: %.20q %.60q is not \"allow\" or \"deny\" with an IP address, a CIDR range or \"all\". Add it again if it is still needed.", model.SingleLine(al.AccessList.Name), item.Directive, item.Address)
-			continue
+		if !model.IsAccessListDirective(directive) || !model.IsAccessListAddress(address) {
+			if directive == "allow" {
+				log.Printf("[Backup] Skipped a rule of access list %.80q: %.20q %.60q is not \"allow\" or \"deny\" with an IP address, a CIDR range or \"all\". Add it again if it is still needed.", model.SingleLine(al.AccessList.Name), item.Directive, item.Address)
+				continue
+			}
+			log.Printf("[Backup] Restored a rule of access list %.80q as \"deny all\": %.20q %.60q is not \"allow\" or \"deny\" with an IP address, a CIDR range or \"all\". Correct it if it is still needed.", model.SingleLine(al.AccessList.Name), item.Directive, item.Address)
+			directive, address = "deny", "all"
 		}
 		itemQuery := `
 			INSERT INTO access_list_items (access_list_id, directive, address, description, sort_order)
 			VALUES ($1, $2, $3, $4, $5)
 		`
-		_, err = tx.ExecContext(ctx, itemQuery, newID, item.Directive, address, model.SingleLine(item.Description), item.SortOrder)
+		_, err = tx.ExecContext(ctx, itemQuery, newID, directive, address, model.SingleLine(item.Description), item.SortOrder)
 		if err != nil {
 			return "", err
 		}

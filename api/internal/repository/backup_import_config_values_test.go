@@ -46,8 +46,16 @@ func TestImportAccessList_KeepsRulesNginxCanUse(t *testing.T) {
 	mock.ExpectExec(`INSERT INTO access_list_items`).
 		WithArgs(listID, "allow", "192.0.2.0/24", "office LAN", 0).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	// Rules that are not an allow and cannot be written fail closed: each is
+	// restored as "deny all" in its place.
 	mock.ExpectExec(`INSERT INTO access_list_items`).
-		WithArgs(listID, "deny", "all", "first line second line", 4).
+		WithArgs(listID, "deny", "all", "", 3).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`INSERT INTO access_list_items`).
+		WithArgs(listID, "deny", "all", "old entry", 4).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`INSERT INTO access_list_items`).
+		WithArgs(listID, "deny", "all", "first line second line", 5).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	_, err := repo.importAccessList(context.Background(), tx, &model.AccessListExport{AccessList: model.AccessListData{
@@ -57,7 +65,8 @@ func TestImportAccessList_KeepsRulesNginxCanUse(t *testing.T) {
 			{Directive: "allow", Address: "example.com", SortOrder: 1},
 			{Directive: "allow", Address: "192.0.2.1;", SortOrder: 2},
 			{Directive: "permit", Address: "192.0.2.2", SortOrder: 3},
-			{Directive: "deny", Address: "all", Description: "first line\nsecond line", SortOrder: 4},
+			{Directive: "deny", Address: "192.0.2.3 second", Description: "old entry", SortOrder: 4},
+			{Directive: "deny", Address: "all", Description: "first line\nsecond line", SortOrder: 5},
 		},
 	}})
 	if err != nil {

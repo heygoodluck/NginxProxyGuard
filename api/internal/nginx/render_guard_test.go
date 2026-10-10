@@ -68,11 +68,27 @@ func TestAccessListRulesLeaveOutRulesNginxCannotUse(t *testing.T) {
 	for _, r := range rules {
 		got = append(got, r.Directive+" "+r.Address)
 	}
-	if want := "allow 192.0.2.0/24|allow 198.51.100.7|deny all"; strings.Join(got, "|") != want {
+	if want := "allow 192.0.2.0/24|allow 198.51.100.7|deny all|deny all"; strings.Join(got, "|") != want {
 		t.Errorf("rules = %q, want %q", strings.Join(got, "|"), want)
 	}
 	if list.Items[1].Address != " 198.51.100.7 " {
 		t.Error("accessListRules changed the stored list")
+	}
+}
+
+// A deny rule that cannot be written must not simply vanish: an allow after
+// it would then admit the address it was meant to stop.
+func TestAccessListRulesWriteAnUnusableDenyAsDenyAll(t *testing.T) {
+	list := &model.AccessList{ID: "list-2", Items: []model.AccessListItem{
+		{ID: "1", Directive: "deny", Address: "192.0.2.1;", Description: "old entry"},
+		{ID: "2", Directive: "allow", Address: "all"},
+	}}
+	var got []string
+	for _, r := range accessListRules(list) {
+		got = append(got, r.Directive+" "+r.Address)
+	}
+	if want := "deny all|allow all"; strings.Join(got, "|") != want {
+		t.Errorf("rules = %q, want %q", strings.Join(got, "|"), want)
 	}
 }
 
@@ -317,6 +333,10 @@ func storedValuesFixture(clean bool) ProxyHostConfigData {
 			model.AccessListItem{ID: "i3", AccessListID: alID, Directive: "allow", Address: "192.0.2.2;"},
 			model.AccessListItem{ID: "i4", AccessListID: alID, Directive: "permit", Address: "192.0.2.3"},
 		)
+	} else {
+		// A rule that is not an allow and cannot be written fails closed: it
+		// is written as "deny all" in its place.
+		items = append(items, model.AccessListItem{ID: "i4", AccessListID: alID, Directive: "deny", Address: "all"})
 	}
 	items = append(items, model.AccessListItem{ID: "i5", AccessListID: alID, Directive: "deny", Address: "all"})
 

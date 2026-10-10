@@ -64,10 +64,12 @@ func headerValue(s string) string {
 
 // accessListRules returns the rules of list that can be written as an allow
 // or deny line: the directive allow or deny and the address, trimmed, an IP
-// address, a CIDR range or "all". A rule that is neither is left out and
-// logged. Such a rule never worked: nginx refused the config it was in, which
-// kept the whole host from loading. Without it the list's final "deny all"
-// still applies.
+// address, a CIDR range or "all". Such a rule never worked otherwise: nginx
+// refused the config it was in, which kept the whole host from loading. A
+// rule that is not usable is logged and fails closed: an allow rule is left
+// out, so the list's final "deny all" still applies to that address; any other
+// rule becomes "deny all" in its place, because leaving out a deny would let
+// an allow after it admit the address the deny was meant to stop.
 func accessListRules(list *model.AccessList) []model.AccessListItem {
 	if list == nil {
 		return nil
@@ -76,9 +78,16 @@ func accessListRules(list *model.AccessList) []model.AccessListItem {
 	for _, item := range list.Items {
 		address := strings.TrimSpace(item.Address)
 		if !model.IsAccessListDirective(item.Directive) || !model.IsAccessListAddress(address) {
+			if item.Directive == "allow" {
+				warnSkippedOnce("access list "+list.ID+" rule "+item.ID+" "+item.Directive+" "+item.Address,
+					"[WARN] Access list %s: rule %q %q is not \"allow\" or \"deny\" with an IP address, a CIDR range or \"all\", so it is left out of the nginx config. Edit the access list to correct or remove it.",
+					list.ID, item.Directive, item.Address)
+				continue
+			}
 			warnSkippedOnce("access list "+list.ID+" rule "+item.ID+" "+item.Directive+" "+item.Address,
-				"[WARN] Access list %s: rule %q %q is not \"allow\" or \"deny\" with an IP address, a CIDR range or \"all\", so it is left out of the nginx config. Edit the access list to correct or remove it.",
+				"[WARN] Access list %s: rule %q %q is not \"allow\" or \"deny\" with an IP address, a CIDR range or \"all\", so it is written as \"deny all\" in its place. Edit the access list to correct or remove it.",
 				list.ID, item.Directive, item.Address)
+			rules = append(rules, model.AccessListItem{ID: item.ID, Directive: "deny", Address: "all"})
 			continue
 		}
 		item.Address = address
