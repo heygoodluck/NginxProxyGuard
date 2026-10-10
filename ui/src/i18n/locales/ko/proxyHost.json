@@ -207,7 +207,8 @@
         "description": "이 IP/CIDR은 GeoIP 제한, 봇 필터 등을 우회하여 항상 접속이 허용됩니다. 내부 서비스나 모니터링 시스템을 등록하세요.",
         "placeholder": "한 줄에 하나의 IP 또는 CIDR 입력\n예: 192.168.1.100\n10.0.0.0/8\n172.16.0.0/16",
         "note": "이 목록의 IP/CIDR은 가장 높은 우선순위를 가지며 모든 차단을 우회합니다.",
-        "registeredCount": "{{count}}개 등록됨"
+        "registeredCount": "{{count}}개 등록됨",
+        "invalidEntries": "IP 주소나 CIDR 범위가 아니어서 저장되지 않습니다: {{entries}}"
       },
       "blockExploits": "취약점 공격 차단 (Block Exploits)",
       "blockExploitsDescription": "일반적인 공격 패턴을 차단합니다",

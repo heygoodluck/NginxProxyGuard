@@ -7,6 +7,7 @@ import { getGeoIPStatus } from '../api/settings'
 import type { GeoDataState } from './proxy-host/types'
 import { GeoRestrictionFields } from './proxy-host/tabs/security/GeoRestrictionFields'
 import { PriorityAllowIPs } from './proxy-host/tabs/security/PriorityAllowIPs'
+import { savableAllowedIPs } from './proxy-host/tabs/security/priorityAllowEntries'
 
 const EMPTY_GEO: GeoDataState = {
   enabled: false,
@@ -55,7 +56,7 @@ export function GlobalGeoManager() {
         enabled: global.enabled,
         mode: global.mode,
         countries: global.countries || [],
-        allowed_ips: global.allowed_ips || [],
+        allowed_ips: savableAllowedIPs(global.allowed_ips || []),
         allow_private_ips: global.allow_private_ips ?? true,
         allow_search_bots: global.allow_search_bots ?? false,
         challenge_mode: global.challenge_mode ?? false,
@@ -104,7 +105,7 @@ export function GlobalGeoManager() {
         enabled: global.enabled,
         mode: global.mode,
         countries: global.countries || [],
-        allowed_ips: global.allowed_ips || [],
+        allowed_ips: savableAllowedIPs(global.allowed_ips || []),
         allow_private_ips: global.allow_private_ips ?? true,
         allow_search_bots: global.allow_search_bots ?? false,
         challenge_mode: global.challenge_mode ?? false,

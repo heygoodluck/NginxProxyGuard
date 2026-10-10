@@ -207,7 +207,8 @@
         "description": "These IPs/CIDRs will bypass GeoIP restrictions, Bot Filter, and other security checks. Add internal services or monitoring systems.",
         "placeholder": "Enter one IP or CIDR per line\ne.g., 192.168.1.100\n10.0.0.0/8\n172.16.0.0/16",
         "note": "IPs and CIDR ranges in this list have highest priority and bypass all blocks.",
-        "registeredCount": "{{count}} entries registered"
+        "registeredCount": "{{count}} entries registered",
+        "invalidEntries": "Not an IP address or CIDR range, so not saved: {{entries}}"
       },
       "blockExploits": "Block Exploits",
       "blockExploitsDescription": "Block common attack patterns",

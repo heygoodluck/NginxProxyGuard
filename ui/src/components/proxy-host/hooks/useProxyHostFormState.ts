@@ -10,6 +10,7 @@ import { api } from '../../../api/client'
 import type { ProxyHost, CreateProxyHostRequest } from '../../../types/proxy-host'
 import type { CreateCertificateRequest } from '../../../types/certificate'
 import type { BotFilterState, FormErrors, GeoDataState } from '../types'
+import { savableAllowedIPs } from '../tabs/security/priorityAllowEntries'
 
 /** Public return type is inferred from {@link useProxyHostFormState}. */
 export type ProxyHostFormStateResult = ReturnType<typeof useProxyHostFormState>
@@ -218,7 +219,9 @@ export function useProxyHostFormState(host: ProxyHost | null | undefined) {
         enabled: existingGeoRestriction.enabled && existingGeoRestriction.countries?.length > 0,
         mode: existingGeoRestriction.mode,
         countries: existingGeoRestriction.countries || [],
-        allowed_ips: existingGeoRestriction.allowed_ips || [],
+        // An entry saved before the API checked them is shown in the text
+        // area (and flagged there) but not sent back, or the save would fail.
+        allowed_ips: savableAllowedIPs(existingGeoRestriction.allowed_ips || []),
         allow_private_ips: existingGeoRestriction.allow_private_ips ?? true,
         allow_search_bots: existingGeoRestriction.allow_search_bots ?? false,
         challenge_mode: existingGeoRestriction.challenge_mode || false,
