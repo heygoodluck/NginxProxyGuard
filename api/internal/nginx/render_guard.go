@@ -2,6 +2,7 @@ package nginx
 
 import (
 	"log"
+	"slices"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -110,20 +111,32 @@ func uriBlockRules(rules []model.URIBlockRule) []model.URIBlockRule {
 }
 
 // renderableGeo returns g with the country codes and priority-allow addresses
-// the templates can write into their if conditions, and g itself when every
-// entry can be. A country goes into the regex of a quoted condition
-// (^(KR|CN)$), so it must be letters only; "--" is the code private addresses
-// get. An address goes into a quoted comparison, a regex built from it, and
-// the @ipMatch list of the host's ModSecurity file, so it must be an IP
-// address or CIDR range as it is. Anything else never matched a request and is
-// left out and logged.
+// the templates can write into their if conditions, normalized as the API
+// saves them, and g itself when every entry already is.
+//
+// A country goes into the regex of a quoted condition (^(KR|CN)$) and is
+// written as model.NormalizeCountryCode gives it: in upper case, the case the
+// GeoIP lookup gives, so a code stored in lower case or with spaces around it
+// matches as it was meant to, and any two letters or "--" are kept (XK is a
+// code the lookup gives that is not on the country picker's list). Anything
+// else is left out.
+//
+// An address goes into a quoted comparison, a regex built from it, and the
+// @ipMatch list of the host's ModSecurity file. It is written without the
+// whitespace around it, and left out unless it is then an IP address or a
+// CIDR range. Every form Go reads as one is kept as it is, IPv6 ranges and
+// IPv4-mapped addresses included.
+//
+// What is left out is logged. It is not a code the lookup gives or an
+// address: a comparison with it never matched, ModSecurity refused it in
+// @ipMatch, and in the country regex it changed what the condition matches.
 func renderableGeo(hostID string, g *model.GeoRestriction) *model.GeoRestriction {
 	if g == nil {
 		return nil
 	}
 	countries := renderableCountries(hostID, g.Countries)
 	allowed := renderableAllowedIPs(hostID, g.AllowedIPs)
-	if len(countries) == len(g.Countries) && len(allowed) == len(g.AllowedIPs) {
+	if slices.Equal(countries, g.Countries) && slices.Equal(allowed, g.AllowedIPs) {
 		return g
 	}
 	geo := *g
@@ -132,46 +145,39 @@ func renderableGeo(hostID string, g *model.GeoRestriction) *model.GeoRestriction
 	return &geo
 }
 
+// renderableCountries returns the country codes in upper case, leaving out
+// what is not a country code (see renderableGeo).
 func renderableCountries(hostID string, countries []string) []string {
 	out := countries[:0:0]
 	for _, c := range countries {
-		if c != "--" && !isTwoLetters(c) {
+		code, ok := model.NormalizeCountryCode(c)
+		if !ok {
 			warnSkippedOnce("geo country "+hostID+" "+c,
 				"[WARN] Host %s: geo restriction country %.40q is not a two-letter country code, so it is left out of the nginx config. Edit the geo restriction to correct or remove it.",
 				hostID, c)
 			continue
 		}
-		out = append(out, c)
+		out = append(out, code)
 	}
 	return out
 }
 
-// renderableAllowedIPs keeps the priority-allow entries that are an IP
-// address or a CIDR range as they are (see renderableGeo).
+// renderableAllowedIPs returns the priority-allow entries that are an IP
+// address or a CIDR range, without the whitespace around them (see
+// renderableGeo).
 func renderableAllowedIPs(hostID string, ips []string) []string {
 	out := ips[:0:0]
 	for _, ip := range ips {
-		if !model.IsIPOrCIDR(ip) {
+		trimmed := strings.TrimSpace(ip)
+		if !model.IsIPOrCIDR(trimmed) {
 			warnSkippedOnce("geo allowed ip "+hostID+" "+ip,
 				"[WARN] Host %s: priority allow entry %.60q is not an IP address or CIDR range, so it is left out of the nginx config. Edit the geo restriction to correct or remove it.",
 				hostID, ip)
 			continue
 		}
-		out = append(out, ip)
+		out = append(out, trimmed)
 	}
 	return out
-}
-
-func isTwoLetters(s string) bool {
-	if len(s) != 2 {
-		return false
-	}
-	for i := 0; i < 2; i++ {
-		if c := s[i] | 0x20; c < 'a' || c > 'z' {
-			return false
-		}
-	}
-	return true
 }
 
 // skippedWarned holds the values already named in a warning above, so each is

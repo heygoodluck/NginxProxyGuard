@@ -116,10 +116,29 @@ func TestValidateUpdateAccessListRequest_ChecksOnlyWhatIsSent(t *testing.T) {
 	}
 }
 
+func TestNormalizeCountryCode(t *testing.T) {
+	for in, want := range map[string]string{
+		"KR": "KR", "XK": "XK", "kr": "KR", "Kr": "KR", " cn ": "CN", "KR\n": "KR", "--": "--", " -- ": "--",
+	} {
+		if got, ok := NormalizeCountryCode(in); !ok || got != want {
+			t.Errorf("NormalizeCountryCode(%q) = %q, %v; want %q, true", in, got, ok, want)
+		}
+	}
+	for _, in := range []string{"", "K", "KOR", "A1", "K R", "K\nR", "KR|CN", `K"R`, ".*", "-", "---", "한국", "\u017fk", "\u212aR"} {
+		if got, ok := NormalizeCountryCode(in); ok {
+			t.Errorf("NormalizeCountryCode(%q) = %q, accepted", in, got)
+		}
+	}
+}
+
 func TestValidateGeoLists(t *testing.T) {
-	allowed := []string{"192.0.2.10", " 198.51.100.0/24", "2001:db8::1", "2001:db8::/48"}
-	if err := ValidateGeoLists([]string{"KR", "US", "GB"}, allowed); err != nil {
+	countries := []string{"KR", "us", " GB ", "XK", "--"}
+	allowed := []string{"192.0.2.10", " 198.51.100.0/24", "2001:db8::1", "2001:db8::/48", "::ffff:192.0.2.1", "::ffff:192.0.2.0/120"}
+	if err := ValidateGeoLists(countries, allowed); err != nil {
 		t.Fatalf("valid lists rejected: %v", err)
+	}
+	if got := strings.Join(countries, ","); got != "KR,US,GB,XK,--" {
+		t.Errorf("countries saved as %q, want them in upper case without spaces", got)
 	}
 	if allowed[1] != "198.51.100.0/24" {
 		t.Errorf("entry saved as %q, want it trimmed", allowed[1])
@@ -128,12 +147,12 @@ func TestValidateGeoLists(t *testing.T) {
 		t.Errorf("fields not sent rejected: %v", err)
 	}
 
-	for _, c := range []string{"kr", "XX", "KOR", "", "KR|CN", "K\"R", "KR\n"} {
+	for _, c := range []string{"KOR", "", "K", "A1", "KR|CN", "K\"R", "K\nR", "한국"} {
 		if err := ValidateGeoLists([]string{"KR", c}, nil); !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "countries[1]") {
 			t.Errorf("country %q: got %v, want an error naming countries[1]", c, err)
 		}
 	}
-	for _, ip := range []string{"example.com", "192.0.2.1\"", "192.0.2.1;", "192.0.2.*", "192.0.2.0/33", "192.0.2.1 192.0.2.2", ""} {
+	for _, ip := range []string{"example.com", "192.0.2.1\"", "192.0.2.1;", "192.0.2.*", "192.0.2.0/33", "192.0.2.1 192.0.2.2", "fe80::1%eth0", ""} {
 		if err := ValidateGeoLists(nil, []string{"192.0.2.10", ip}); !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "allowed_ips[1]") {
 			t.Errorf("allowed ip %q: got %v, want an error naming allowed_ips[1]", ip, err)
 		}
@@ -141,13 +160,13 @@ func TestValidateGeoLists(t *testing.T) {
 }
 
 func TestUsableGeoLists(t *testing.T) {
-	countries, ips, dropped := UsableGeoLists([]string{"KR", "XX", "CN"}, []string{" 192.0.2.1 ", "example.com"})
-	if strings.Join(countries, ",") != "KR,CN" || strings.Join(ips, ",") != "192.0.2.1" || len(dropped) != 2 {
+	countries, ips, dropped := UsableGeoLists([]string{"KR", "KOR", "cn", "XK"}, []string{" 192.0.2.1 ", "example.com", "2001:db8::/32"})
+	if strings.Join(countries, ",") != "KR,CN,XK" || strings.Join(ips, ",") != "192.0.2.1,2001:db8::/32" || len(dropped) != 2 {
 		t.Errorf("got countries %v, ips %v, dropped %v", countries, ips, dropped)
 	}
 	// An empty list stays a list (the columns are NOT NULL arrays); an absent
 	// one stays absent.
-	countries, ips, _ = UsableGeoLists([]string{"XX"}, nil)
+	countries, ips, _ = UsableGeoLists([]string{"KOR"}, nil)
 	if countries == nil || len(countries) != 0 || ips != nil {
 		t.Errorf("got countries %#v, ips %#v", countries, ips)
 	}

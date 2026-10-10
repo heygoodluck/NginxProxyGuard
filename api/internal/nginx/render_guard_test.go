@@ -139,20 +139,99 @@ func TestURIBlockPatternsNginxAcceptedRenderAsBefore(t *testing.T) {
 }
 
 func TestRenderableGeoKeepsValidEntriesAsTheyAre(t *testing.T) {
-	g := &model.GeoRestriction{Countries: []string{"KR", "CN"}, AllowedIPs: []string{"192.0.2.10", "198.51.100.0/24", "2001:db8::/32"}}
+	g := &model.GeoRestriction{Countries: []string{"KR", "CN", "XK", "--"}, AllowedIPs: []string{"192.0.2.10", "198.51.100.0/24", "2001:db8::/32", "::ffff:192.0.2.0/120"}}
 	if renderableGeo("h", g) != g {
 		t.Error("a restriction with only valid entries was copied")
 	}
 	bad := &model.GeoRestriction{
-		Countries:  []string{"KR", `C"N`, "CN|RU", "--"},
+		Countries:  []string{"KR", `C"N`, "CN|RU", "--", "us"},
 		AllowedIPs: []string{"192.0.2.10", `192.0.2.11"`, " 192.0.2.12", "example.com"},
 	}
 	got := renderableGeo("h", bad)
-	if strings.Join(got.Countries, ",") != "KR,--" || strings.Join(got.AllowedIPs, ",") != "192.0.2.10" {
+	if strings.Join(got.Countries, ",") != "KR,--,US" || strings.Join(got.AllowedIPs, ",") != "192.0.2.10,192.0.2.12" {
 		t.Errorf("got countries %v, allowed %v", got.Countries, got.AllowedIPs)
 	}
-	if len(bad.Countries) != 4 || len(bad.AllowedIPs) != 4 {
+	if strings.Join(bad.Countries, ",") != `KR,C"N,CN|RU,--,us` || bad.AllowedIPs[2] != " 192.0.2.12" {
 		t.Error("renderableGeo changed the stored restriction")
+	}
+}
+
+// Every country code and priority allow entry a geo restriction can have been
+// saved with still reaches the config after the API started checking them:
+// two letters in any case (written in upper case, the case the GeoIP lookup
+// gives), "--", and every IP address or CIDR range Go reads, IPv6 ranges and
+// IPv4-mapped forms included (written as they were). What is left out is not
+// a code the lookup gives or an address, and never matched a request.
+func TestStoredGeoEntriesStillRender(t *testing.T) {
+	countries := []struct{ stored, rendered string }{
+		{"KR", "KR"}, {"XK", "XK"}, {"EU", "EU"}, {"UK", "UK"}, {"--", "--"},
+		{"kr", "KR"}, {"Jp", "JP"}, {" DE", "DE"}, {"FR ", "FR"}, {"IT\n", "IT"},
+		{"A1", ""}, {"KOR", ""}, {"K", ""}, {"", ""}, {"KR|CN", ""}, {`C"N`, ""}, {"K R", ""}, {".*", ""}, {"한국", ""},
+	}
+	addresses := []struct{ stored, rendered string }{
+		{"192.0.2.10", "192.0.2.10"}, {"192.0.2.0/24", "192.0.2.0/24"}, {"192.0.2.1/32", "192.0.2.1/32"},
+		{"198.51.100.1/24", "198.51.100.1/24"}, {"2001:db8::1", "2001:db8::1"}, {"2001:DB8::2", "2001:DB8::2"},
+		{"2001:db8::/32", "2001:db8::/32"}, {"::ffff:192.0.2.1", "::ffff:192.0.2.1"},
+		{"::ffff:192.0.2.0/120", "::ffff:192.0.2.0/120"}, {"::ffff:c000:202", "::ffff:c000:202"},
+		{" 203.0.113.11", "203.0.113.11"}, {"203.0.113.12 ", "203.0.113.12"},
+		{"fe80::1%eth0", ""}, {"192.0.2.*", ""}, {"192.0.2", ""}, {"10/8", ""}, {"localhost", ""}, {"192.000.002.001", ""}, {"[2001:db8::1]", ""},
+	}
+
+	var storedCountries, wantCountries, storedIPs, wantIPs []string
+	for _, c := range countries {
+		storedCountries = append(storedCountries, c.stored)
+		if c.rendered != "" {
+			wantCountries = append(wantCountries, c.rendered)
+		}
+	}
+	for _, a := range addresses {
+		storedIPs = append(storedIPs, a.stored)
+		if a.rendered != "" {
+			wantIPs = append(wantIPs, a.rendered)
+		}
+	}
+
+	for _, mode := range []string{"blacklist", "whitelist"} {
+		host := goldenBaseHost("00000000-0000-0000-0000-000000000c05", "geo-shapes.example.com")
+		geo := func(countries, ips []string) *model.GeoRestriction {
+			return &model.GeoRestriction{ID: "g", ProxyHostID: host.ID, Mode: mode, Enabled: true, Countries: countries, AllowedIPs: ips}
+		}
+		var stored, normalized bytes.Buffer
+		if err := renderProxyHostConfig(context.Background(), &stored, ProxyHostConfigData{Host: host, GlobalSettings: baseGlobalSettings(), GeoRestriction: geo(storedCountries, storedIPs)}); err != nil {
+			t.Fatal(err)
+		}
+		if err := renderProxyHostConfig(context.Background(), &normalized, ProxyHostConfigData{Host: host, GlobalSettings: baseGlobalSettings(), GeoRestriction: geo(wantCountries, wantIPs)}); err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(stored.Bytes(), normalized.Bytes()) {
+			t.Errorf("%s: stored entries render differently from their normalized form\n%s", mode, diffPreview(normalized.Bytes(), stored.Bytes()))
+		}
+		out := stored.String()
+		if want := "^(" + strings.Join(wantCountries, "|"); !strings.Contains(out, want) {
+			t.Errorf("%s: config does not hold %q", mode, want)
+		}
+		for _, a := range wantIPs {
+			want := `if ($remote_addr = "` + a + `")`
+			if strings.Contains(a, "/") {
+				want = `if ($remote_addr ~ "` + cidrToNginxPattern(a) + `")`
+			}
+			if !strings.Contains(out, want) {
+				t.Errorf("%s: config does not hold %q", mode, want)
+			}
+		}
+	}
+
+	m, _ := newRequestPathTestManager(t)
+	host := &model.ProxyHost{ID: "00000000-0000-0000-0000-000000000c05", WAFEnabled: true, WAFMode: "blocking"}
+	if err := m.GenerateHostWAFConfig(context.Background(), host, nil, storedIPs); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(m.modsecPath, "host_"+host.ID+".conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `"@ipMatch ` + strings.Join(wantIPs, ",") + `"`; !strings.Contains(string(b), want) {
+		t.Errorf("WAF file does not hold %s:\n%s", want, b)
 	}
 }
 

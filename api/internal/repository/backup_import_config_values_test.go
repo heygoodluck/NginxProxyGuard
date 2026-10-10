@@ -96,11 +96,11 @@ func TestImportGeoRestrictions_KeepCountryCodesAndAddresses(t *testing.T) {
 	repo, tx, mock := beginMockTx(t)
 	const hostID = "00000000-0000-0000-0000-000000000001"
 	mock.ExpectExec(`INSERT INTO geo_restrictions`).
-		WithArgs(hostID, "blacklist", `{"CN","RU"}`, true, false, false, false, `{"192.0.2.10","198.51.100.0/24"}`, "{}", false, false, false, false).
+		WithArgs(hostID, "blacklist", `{"CN","RU","KR","XK"}`, true, false, false, false, `{"192.0.2.10","198.51.100.0/24"}`, "{}", false, false, false, false).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	err := repo.importGeoRestriction(context.Background(), tx, hostID, &model.GeoRestrictionExport{
 		Mode: "blacklist", Enabled: true,
-		Countries:  []string{"CN", `C"N`, "RU", "kr"},
+		Countries:  []string{"CN", `C"N`, "RU", "kr", " XK"},
 		AllowedIPs: []string{"192.0.2.10", "192.0.2.11 second line", " 198.51.100.0/24"},
 	})
 	if err != nil {
@@ -109,11 +109,11 @@ func TestImportGeoRestrictions_KeepCountryCodesAndAddresses(t *testing.T) {
 
 	mock.ExpectExec(`DELETE FROM global_geo_restrictions`).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(`INSERT INTO global_geo_restrictions`).
-		WithArgs(true, "whitelist", `{"KR"}`, `{"2001:db8::/32"}`, true, false, false).
+		WithArgs(true, "whitelist", `{"KR","--"}`, `{"2001:db8::/32"}`, true, false, false).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	err = repo.importGlobalGeo(context.Background(), tx, &model.GlobalGeoRestrictionExport{
 		Enabled: true, Mode: "whitelist", AllowPrivateIPs: true,
-		Countries:  []string{"KR", "KR|CN"},
+		Countries:  []string{"KR", "KR|CN", "--"},
 		AllowedIPs: []string{"2001:db8::/32", "example.com"},
 	})
 	if err != nil {

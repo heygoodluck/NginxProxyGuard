@@ -327,21 +327,59 @@ var CommonCountryCodes = map[string]string{
 }
 
 // A geo restriction's countries are joined into the regex of an if condition
-// in the config of each host it applies to (^(KR|CN)$), and each priority
-// allow entry is compared with the client address and listed in the host's
-// ModSecurity file. Both are written as they are.
+// in the config of each host it applies to (^(KR|CN)$), matched against the
+// country code the GeoIP lookup gives the client address: two upper-case
+// letters, or "--" for an address it has no country for. Each priority allow
+// entry is compared with the client address and listed in the host's
+// ModSecurity file.
+//
+// A country is any two ASCII letters, not only a code from CommonCountryCodes
+// (the list the country picker offers): the GeoIP database also gives codes
+// such as XK, and a list saved before the API checked countries can hold
+// them. It is saved, and written into the config, in upper case, the case the
+// lookup gives; "kr" never matched before. "--" is kept too. Anything else is
+// refused, and left out of the config with a warning: it is not a code the
+// lookup gives, and as part of the regex it would change what the condition
+// matches.
+
+// NormalizeCountryCode returns c without the whitespace around it and in
+// upper case, and whether that is a country code a geo restriction can hold:
+// two ASCII letters, or "--".
+func NormalizeCountryCode(c string) (string, bool) {
+	c = strings.TrimSpace(c)
+	if c == "--" {
+		return c, true
+	}
+	if len(c) != 2 {
+		return c, false
+	}
+	b := []byte(c)
+	for i, ch := range b {
+		switch {
+		case ch >= 'A' && ch <= 'Z':
+		case ch >= 'a' && ch <= 'z':
+			b[i] = ch - ('a' - 'A')
+		default:
+			return c, false
+		}
+	}
+	return string(b), true
+}
 
 // ValidateGeoLists checks the countries and priority allow entries of a per
-// host geo restriction or of the global default, trimming each entry (and
-// saving it trimmed). A nil slice is a field the request did not send.
+// host geo restriction or of the global default, normalizing each entry (and
+// saving it normalized): a country with NormalizeCountryCode, an entry
+// trimmed. A nil slice is a field the request did not send.
 //
-// A country must be a code from CommonCountryCodes, the list the country
-// picker offers, and an entry an IP address or a CIDR range.
+// A country must be two letters (or "--"), and an entry an IP address or a
+// CIDR range.
 func ValidateGeoLists(countries, allowedIPs []string) error {
-	for i, c := range countries {
-		if _, ok := CommonCountryCodes[c]; !ok {
-			return fmt.Errorf("%w: countries[%d] %.20q is not a two-letter ISO 3166-1 country code", ErrInvalidInput, i, c)
+	for i := range countries {
+		code, ok := NormalizeCountryCode(countries[i])
+		if !ok {
+			return fmt.Errorf("%w: countries[%d] %.20q is not a two-letter country code", ErrInvalidInput, i, countries[i])
 		}
+		countries[i] = code
 	}
 	for i := range allowedIPs {
 		allowedIPs[i] = strings.TrimSpace(allowedIPs[i])
@@ -353,13 +391,13 @@ func ValidateGeoLists(countries, allowedIPs []string) error {
 }
 
 // UsableGeoLists returns the countries and priority allow entries
-// ValidateGeoLists accepts (entries trimmed), and the rest, for a restore that
-// keeps what it can.
+// ValidateGeoLists accepts (normalized as it saves them), and the rest, for a
+// restore that keeps what it can.
 func UsableGeoLists(countries, allowedIPs []string) (validCountries, validIPs, dropped []string) {
 	validCountries = countries[:0:0]
 	for _, c := range countries {
-		if _, ok := CommonCountryCodes[c]; ok {
-			validCountries = append(validCountries, c)
+		if code, ok := NormalizeCountryCode(c); ok {
+			validCountries = append(validCountries, code)
 		} else {
 			dropped = append(dropped, c)
 		}

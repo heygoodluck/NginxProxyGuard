@@ -731,9 +731,12 @@ paths:
         false). Use PUT for a partial update. Requires the `proxy:write` scope
         when called with an API token.
 
-        Each `countries` entry must be a two-letter code from GET /geo/countries,
-        and each `allowed_ips` entry an IP address or CIDR range (surrounding
-        spaces are trimmed); anything else is answered with 400.
+        Each `countries` entry must be two letters, in either case (any code the
+        GeoIP database gives, such as XK, not only those GET /geo/countries
+        lists), or `--`, the code of an address the database has no country for;
+        it is saved in upper case. Each `allowed_ips` entry must be an IP address
+        or CIDR range. Surrounding spaces are trimmed; anything else is answered
+        with 400.
       security:
         - BearerAuth: []
       parameters:
@@ -3635,8 +3638,9 @@ paths:
         '400':
           description: |
             Malformed body, `mode` is neither `whitelist` nor `blacklist`, a `countries`
-            entry is not a two-letter code from GET /geo/countries, or an `allowed_ips`
-            entry is not an IP address or CIDR range
+            entry is neither two letters nor `--`, or an `allowed_ips` entry is not an
+            IP address or CIDR range (entries are checked and saved as described for
+            POST /proxy-hosts/{id}/geo)
           content:
             application/json:
               schema:

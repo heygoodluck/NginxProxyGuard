@@ -262,11 +262,11 @@ func proxyHostRow(id string) []driver.Value {
 	}
 }
 
-func TestGeoWrites_RejectUnknownCountriesAndAddresses(t *testing.T) {
+func TestGeoWrites_RejectEntriesThatAreNotCodesOrAddresses(t *testing.T) {
 	const hostID = "00000000-0000-0000-0000-000000000001"
 	cases := []struct{ name, body, field string }{
-		{"lower-case country", `{"mode":"blacklist","countries":["kr"]}`, "countries[0]"},
-		{"unknown country", `{"mode":"blacklist","countries":["KR","XX"]}`, "countries[1]"},
+		{"three letters", `{"mode":"blacklist","countries":["KOR"]}`, "countries[0]"},
+		{"letter and digit", `{"mode":"blacklist","countries":["KR","A1"]}`, "countries[1]"},
 		{"two countries in one entry", `{"mode":"blacklist","countries":["CN|RU"]}`, "countries[0]"},
 		{"host name", `{"mode":"blacklist","countries":["CN"],"allowed_ips":["example.com"]}`, "allowed_ips[0]"},
 		{"address with a quote", `{"mode":"blacklist","countries":["CN"],"allowed_ips":["192.0.2.10","192.0.2.11\""]}`, "allowed_ips[1]"},
@@ -286,15 +286,34 @@ func TestGeoWrites_RejectUnknownCountriesAndAddresses(t *testing.T) {
 			expectRejected(t, callJSON(t, h.SetForProxyHost, http.MethodPost, tc.body, "id", hostID), tc.field)
 		})
 	}
+}
 
+// Any two letters are a country (XK is not on the picker's list, but the GeoIP
+// lookup gives it), saved in upper case; "--" is kept; entries are trimmed.
+func TestGeoWrites_SaveCountriesInUpperCase(t *testing.T) {
+	const hostID = "00000000-0000-0000-0000-000000000001"
 	db, mock := newMockDB(t)
 	dbw := &database.DB{DB: db}
 	h := NewGeoHandler(repository.NewGeoRepository(dbw), repository.NewGlobalGeoRepository(dbw), repository.NewProxyHostRepository(dbw), nil, nil)
-	valid := `{"mode":"whitelist","countries":["KR","US"],"allowed_ips":["192.0.2.10"," 198.51.100.0/24","2001:db8::/48"]}`
-	mock.ExpectQuery(`global_geo_restrictions`).WillReturnError(errStop)
-	expectAccepted(t, callJSON(t, h.UpdateGlobal, http.MethodPut, valid))
+	body := `{"mode":"whitelist","countries":["KR","us"," xk ","--"],"allowed_ips":["192.0.2.10"," 198.51.100.0/24","2001:db8::/48","::ffff:192.0.2.0/120"]}`
+	const countries, allowed = `{"KR","US","XK","--"}`, `{"192.0.2.10","198.51.100.0/24","2001:db8::/48","::ffff:192.0.2.0/120"}`
+
+	mock.ExpectQuery(`FROM global_geo_restrictions`).WillReturnError(sql.ErrNoRows)
+	mock.ExpectExec(`INSERT INTO global_geo_restrictions`).
+		WithArgs(false, "whitelist", countries, allowed, true, false, false).
+		WillReturnError(errStop)
+	expectAccepted(t, callJSON(t, h.UpdateGlobal, http.MethodPut, body))
+
+	row := proxyHostRow(hostID)
+	mock.ExpectQuery(`SELECT id, COALESCE\(proxy_type`).WithArgs(hostID).
+		WillReturnRows(sqlmock.NewRows(positionalColumnNames(len(row))).AddRow(row...))
+	mock.ExpectQuery(`INSERT INTO geo_restrictions`).
+		WithArgs(hostID, "whitelist", countries, allowed, true, false, true, false, false).
+		WillReturnError(errStop)
+	expectAccepted(t, callJSON(t, h.SetForProxyHost, http.MethodPost, body, "id", hostID))
+
 	mock.ExpectQuery(`geo_restrictions`).WillReturnError(errStop)
-	expectAccepted(t, callJSON(t, h.UpdateForProxyHost, http.MethodPut, valid, "id", hostID))
+	expectAccepted(t, callJSON(t, h.UpdateForProxyHost, http.MethodPut, body, "id", hostID))
 }
 
 func positionalColumnNames(n int) []string {
