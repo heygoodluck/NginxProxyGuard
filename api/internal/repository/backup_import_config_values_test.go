@@ -79,6 +79,59 @@ func TestImportBannedIP_KeepsReasonOnOneLine(t *testing.T) {
 	}
 }
 
+func TestImportBannedIP_KeepsOnlyAddresses(t *testing.T) {
+	repo, tx, mock := beginMockTx(t)
+	const hostID = "00000000-0000-0000-0000-000000000001"
+	mock.ExpectQuery(`SELECT EXISTS`).WithArgs("198.51.100.0/24", hostID).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+	mock.ExpectExec(`INSERT INTO banned_ips`).
+		WithArgs(hostID, "198.51.100.0/24", "", 1, sqlmock.AnyArg(), nil, true, false).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	err := repo.importBannedIP(context.Background(), tx, &model.BannedIPExport{
+		ProxyHostID: hostID, IPAddress: " 198.51.100.0/24 ", FailCount: 1, BannedAt: time.Now(), IsPermanent: true,
+	})
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+
+	// Not an address: nothing is read or written, and the restore goes on.
+	for _, address := range []string{"all", "203.0.113.11 second line", "203.0.113.12\nsecond line", "203.0.113.13;", "example.com", ""} {
+		err := repo.importBannedIP(context.Background(), tx, &model.BannedIPExport{
+			IPAddress: address, FailCount: 1, BannedAt: time.Now(), IsPermanent: true,
+		})
+		if err != nil {
+			t.Errorf("import %q: %v", address, err)
+		}
+	}
+}
+
+func TestImportURIBlocks_KeepOnlyAddressesAsExceptionIPs(t *testing.T) {
+	repo, tx, mock := beginMockTx(t)
+	const hostID = "00000000-0000-0000-0000-000000000001"
+	mock.ExpectExec(`INSERT INTO uri_blocks`).
+		WithArgs(hostID, true, sqlmock.AnyArg(), `{"192.0.2.10","198.51.100.0/24"}`, false).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	err := repo.importURIBlock(context.Background(), tx, &model.URIBlockExport{
+		ProxyHostID: hostID, Enabled: true,
+		ExceptionIPs: []string{"192.0.2.10", "all", `192.0.2.11"`, " 198.51.100.0/24", "192.0.2.12 second line", "192.0.2.13\nsecond line"},
+	})
+	if err != nil {
+		t.Fatalf("import per-host URI block: %v", err)
+	}
+
+	mock.ExpectExec(`DELETE FROM global_uri_blocks`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`INSERT INTO global_uri_blocks`).
+		WithArgs(true, sqlmock.AnyArg(), `{"2001:db8::/32"}`, true).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	err = repo.importGlobalURIBlock(context.Background(), tx, &model.GlobalURIBlockExport{
+		Enabled: true, AllowPrivateIPs: true,
+		ExceptionIPs: []string{"2001:db8::/32", "example.com"},
+	})
+	if err != nil {
+		t.Fatalf("import global URI block: %v", err)
+	}
+}
+
 func TestImportExploitBlockRule_KeepsNameOnOneLine(t *testing.T) {
 	repo, tx, mock := beginMockTx(t)
 	mock.ExpectQuery(`INSERT INTO exploit_block_rules`).

@@ -114,6 +114,17 @@ func (r *BackupRepository) importWAFExclusion(ctx context.Context, tx *sql.Tx, w
 }
 
 func (r *BackupRepository) importBannedIP(ctx context.Context, tx *sql.Tx, bip *model.BannedIPExport) error {
+	// The address is written as a network into the config of every host the
+	// ban covers. It is restored without the whitespace around it, and a ban
+	// whose address is then not an IP address or a CIDR range is left out, as
+	// the config generator would leave it out: failing the restore would roll
+	// back everything else in it.
+	address := strings.TrimSpace(bip.IPAddress)
+	if !model.IsIPOrCIDR(address) {
+		log.Printf("[Backup] Skipped the ban of %.60q: it is not an IP address or CIDR range. Ban the address again if it is still needed.", bip.IPAddress)
+		return nil
+	}
+
 	// Check if already exists (partial unique indexes require manual check)
 	var exists bool
 	var proxyHostID interface{}
@@ -121,14 +132,14 @@ func (r *BackupRepository) importBannedIP(ctx context.Context, tx *sql.Tx, bip *
 		proxyHostID = bip.ProxyHostID
 		err := tx.QueryRowContext(ctx,
 			"SELECT EXISTS(SELECT 1 FROM banned_ips WHERE ip_address = $1 AND proxy_host_id = $2)",
-			bip.IPAddress, proxyHostID).Scan(&exists)
+			address, proxyHostID).Scan(&exists)
 		if err != nil {
 			return err
 		}
 	} else {
 		err := tx.QueryRowContext(ctx,
 			"SELECT EXISTS(SELECT 1 FROM banned_ips WHERE ip_address = $1 AND proxy_host_id IS NULL)",
-			bip.IPAddress).Scan(&exists)
+			address).Scan(&exists)
 		if err != nil {
 			return err
 		}
@@ -145,7 +156,7 @@ func (r *BackupRepository) importBannedIP(ctx context.Context, tx *sql.Tx, bip *
 
 	// The reason is written as a comment after the address in the config of
 	// every host the ban covers, so it is kept on one line.
-	_, err := tx.ExecContext(ctx, query, proxyHostID, bip.IPAddress, model.SingleLine(bip.Reason), bip.FailCount,
+	_, err := tx.ExecContext(ctx, query, proxyHostID, address, model.SingleLine(bip.Reason), bip.FailCount,
 		bip.BannedAt, bip.ExpiresAt, bip.IsPermanent, bip.IsAutoBanned)
 	return err
 }
@@ -164,7 +175,7 @@ func (r *BackupRepository) importURIBlock(ctx context.Context, tx *sql.Tx, ub *m
 			updated_at = NOW()
 	`
 
-	_, err := tx.ExecContext(ctx, query, ub.ProxyHostID, ub.Enabled, rulesJSON, pq.Array(ub.ExceptionIPs), ub.AllowPrivateIPs)
+	_, err := tx.ExecContext(ctx, query, ub.ProxyHostID, ub.Enabled, rulesJSON, pq.Array(usableExceptionIPs(ub.ExceptionIPs)), ub.AllowPrivateIPs)
 	return err
 }
 
@@ -179,7 +190,7 @@ func (r *BackupRepository) importGlobalURIBlock(ctx context.Context, tx *sql.Tx,
 		VALUES ($1, $2, $3, $4)
 	`
 
-	_, err := tx.ExecContext(ctx, query, ub.Enabled, rulesJSON, pq.Array(ub.ExceptionIPs), ub.AllowPrivateIPs)
+	_, err := tx.ExecContext(ctx, query, ub.Enabled, rulesJSON, pq.Array(usableExceptionIPs(ub.ExceptionIPs)), ub.AllowPrivateIPs)
 	return err
 }
 
@@ -213,6 +224,23 @@ func writableURIBlockRules(rules []interface{}) []model.URIBlockRule {
 		rule.Pattern = pattern
 		rule.Description = model.SingleLine(rule.Description)
 		out = append(out, rule)
+	}
+	return out
+}
+
+// usableExceptionIPs returns the exception IPs of a backup's URI block that
+// are an IP address or a CIDR range, without the whitespace around them, and
+// logs the rest. Each is written into an if condition of every URI block
+// location, and the config generator would leave out any other value.
+func usableExceptionIPs(ips []string) []string {
+	out := ips[:0:0]
+	for _, ip := range ips {
+		trimmed := strings.TrimSpace(ip)
+		if !model.IsIPOrCIDR(trimmed) {
+			log.Printf("[Backup] Skipped URI block exception IP %.60q: it is not an IP address or CIDR range. Add it again if it is still needed.", ip)
+			continue
+		}
+		out = append(out, trimmed)
 	}
 	return out
 }
