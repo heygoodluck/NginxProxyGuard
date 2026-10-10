@@ -33,7 +33,8 @@ var updateGolden = flag.Bool("update-golden", false, "update golden files")
 //
 // Keep in sync with the template wiring in manager.go:
 //   - Funcs: GetTemplateFuncMap plus dnsResolver + upstreamScheme
-//   - Pre-processing: AdvancedConfig directive parsing + server/location split
+//   - Pre-processing: AdvancedConfig directive parsing + server/location split,
+//     and the geo entry filter (renderableGeo)
 //   - Listen ports, IPv6 flag, and apiHost injection
 func renderProxyHostConfig(_ context.Context, w *bytes.Buffer, data ProxyHostConfigData) error {
 	// Mirror manager.GenerateConfigFull defaults.
@@ -42,6 +43,9 @@ func renderProxyHostConfig(_ context.Context, w *bytes.Buffer, data ProxyHostCon
 	}
 	if data.HTTPSPort == "" {
 		data.HTTPSPort = "443"
+	}
+	if data.Host != nil {
+		data.GeoRestriction = renderableGeo(data.Host.ID, data.GeoRestriction)
 	}
 
 	apiHostValue := "127.0.0.1:9080"

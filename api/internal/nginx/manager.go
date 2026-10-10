@@ -550,6 +550,10 @@ func (m *Manager) GenerateConfigFull(ctx context.Context, data ProxyHostConfigDa
 	data.HTTPSPort = m.httpsPort
 	data.EnableIPv6 = m.enableIPv6
 
+	// Geo restriction entries are written into if conditions as they are,
+	// and rows saved before the API checked them can hold anything.
+	data.GeoRestriction = renderableGeo(data.Host.ID, data.GeoRestriction)
+
 	// Use centralized template functions and add proxy-host-specific ones.
 	// apiHost is resolved+sanitized once at boot in NewManager (see #158).
 	funcMap := GetTemplateFuncMap(m.apiHost)

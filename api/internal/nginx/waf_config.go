@@ -128,7 +128,9 @@ func (m *Manager) GenerateHostWAFConfig(ctx context.Context, host *model.ProxyHo
 		ParanoiaLevel:    paranoiaLevel,
 		AnomalyThreshold: anomalyThreshold,
 		Exclusions:       exclusions,
-		AllowedIPs:       allowedIPs,
+		// Written into the quoted @ipMatch argument as they are (see
+		// renderableGeo).
+		AllowedIPs: renderableAllowedIPs(host.ID, allowedIPs),
 	}
 
 	funcMap := GetSimpleTemplateFuncMap()

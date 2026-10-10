@@ -201,7 +201,7 @@
 {{end}}{{end}}{{end}}
 
 {{if .AccessList}}{{if .AccessList.Items}}
-    # Access List: {{.AccessList.Name}}
+    # Access List: {{commentText .AccessList.Name}}
     # Note: Access list denials will have block_reason set to access_denied
     set $block_reason_var "access_denied";
 {{if .AccessList.SatisfyAny}}{{if .ChallengeGate}}    # No "satisfy any" here: next to the challenge gate it would let every visitor the gate passes skip this list.{{else}}    satisfy any;{{end}}{{end}}
@@ -209,8 +209,8 @@
     # Global trusted IPs - allow before deny (access phase, first-match wins)
 {{range $.GlobalTrustedIPs}}    allow {{.}};
 {{end}}{{- end}}
-{{range .AccessList.Items}}
-    {{.Directive}} {{.Address}};{{if .Description}} # {{.Description}}{{end}}
+{{range accessListRules .AccessList}}
+    {{.Directive}} {{.Address}};{{if .Description}} # {{commentText .Description}}{{end}}
 {{end}}
     deny all;
 {{end}}{{end}}
@@ -223,7 +223,7 @@
     set $exploit_qs_block 0;
     set $exploit_qs_rule "-";
 {{range $rule := filterRulesByPatternType .ExploitBlockRules "query_string"}}
-    # {{$rule.Name}} ({{$rule.Category}})
+    # {{commentText $rule.Name}} ({{commentText $rule.Category}})
 {{- if $rule.URIExclusions}}
     # URI-scoped exclusions — rule bypasses the check on matching paths
     set $exploit_skip_{{$rule.IDSanitized}} "0";
@@ -277,7 +277,7 @@
     set $rfi_block 0;
     set $rfi_rule "-";
 {{range $rule := filterRulesByPatternType .ExploitBlockRules "request_uri"}}
-    # {{$rule.Name}} ({{$rule.Category}})
+    # {{commentText $rule.Name}} ({{commentText $rule.Category}})
 {{- if $rule.URIExclusions}}
     # URI-scoped exclusions — rule bypasses the check on matching paths
     set $rfi_skip_{{$rule.IDSanitized}} "0";
@@ -329,7 +329,7 @@
     # User-agent rules (scanner/tool detection)
 {{if hasRulesOfType .ExploitBlockRules "user_agent"}}
 {{range filterRulesByPatternType .ExploitBlockRules "user_agent"}}
-    # {{.Name}} ({{.Category}})
+    # {{commentText .Name}} ({{commentText .Category}})
     if ($http_user_agent ~* "{{escapeNginxPattern .Pattern}}") {
         set $block_reason_var "exploit_block";
         set $exploit_rule_var "{{.ID}}";
@@ -353,7 +353,7 @@
         return 405;
     }
 {{range filterRulesByPatternType .ExploitBlockRules "request_method"}}
-    # {{.Name}} ({{.Category}})
+    # {{commentText .Name}} ({{commentText .Category}})
     if ($request_method ~* "{{escapeNginxPattern .Pattern}}") {
         set $block_reason_var "exploit_block";
         set $exploit_rule_var "{{.ID}}";
@@ -649,8 +649,8 @@
 
 {{if .URIBlock}}{{if .URIBlock.Enabled}}
     # URI Path Blocking
-{{range .URIBlock.Rules}}{{if .Enabled}}
-    # Block: {{.Description}}
+{{range uriBlockRules .URIBlock.Rules}}{{if .Enabled}}
+    # Block: {{commentText .Description}}
     {{uriLocationDirective .MatchType .Pattern}} {
 {{if hasURIBlockExceptionIPs $.URIBlock}}
         # Check exception IPs

@@ -185,6 +185,11 @@ func GetTemplateFuncMap(apiHost string) template.FuncMap {
 			return directives[name]
 		},
 		"exemptionPattern": exemptionPattern,
+		// Stored values on their way into the config (render_guard.go).
+		"commentText":     commentText,
+		"headerValue":     headerValue,
+		"accessListRules": accessListRules,
+		"uriBlockRules":   uriBlockRules,
 	}
 }
 

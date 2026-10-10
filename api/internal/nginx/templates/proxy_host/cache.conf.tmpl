@@ -247,7 +247,7 @@
         add_header Strict-Transport-Security "max-age={{.SecurityHeaders.HSTSMaxAge}}{{if .SecurityHeaders.HSTSIncludeSubdomains}}; includeSubDomains{{end}}{{if .SecurityHeaders.HSTSPreload}}; preload{{end}}" always;
         {{end}}
         {{if .SecurityHeaders.XFrameOptions}}
-        add_header X-Frame-Options "{{.SecurityHeaders.XFrameOptions}}" always;
+        add_header X-Frame-Options "{{headerValue .SecurityHeaders.XFrameOptions}}" always;
         {{end}}
         {{if .SecurityHeaders.XContentTypeOptions}}
         add_header X-Content-Type-Options "nosniff" always;
@@ -256,13 +256,13 @@
         add_header X-XSS-Protection "1; mode=block" always;
         {{end}}
         {{if .SecurityHeaders.ReferrerPolicy}}
-        add_header Referrer-Policy "{{.SecurityHeaders.ReferrerPolicy}}" always;
+        add_header Referrer-Policy "{{headerValue .SecurityHeaders.ReferrerPolicy}}" always;
         {{end}}
         {{if .SecurityHeaders.ContentSecurityPolicy}}
-        add_header Content-Security-Policy "{{.SecurityHeaders.ContentSecurityPolicy}}" always;
+        add_header Content-Security-Policy "{{headerValue .SecurityHeaders.ContentSecurityPolicy}}" always;
         {{end}}
         {{if .SecurityHeaders.PermissionsPolicy}}
-        add_header Permissions-Policy "{{.SecurityHeaders.PermissionsPolicy}}" always;
+        add_header Permissions-Policy "{{headerValue .SecurityHeaders.PermissionsPolicy}}" always;
         {{end}}
         {{end}}{{end}}
 {{if .AdvancedConfigLocationLevel}}{{if not .AdvancedConfigHasLocation}}

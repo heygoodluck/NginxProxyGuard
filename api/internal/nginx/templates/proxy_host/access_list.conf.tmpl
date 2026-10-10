@@ -6,7 +6,7 @@
 geo $banned_ip_{{sanitizeID .Host.ID}} {
     default 0;
 {{range .BannedIPs}}
-    {{.IPAddress}} 1; # {{.Reason}}
+    {{.IPAddress}} 1; # {{commentText .Reason}}
 {{end}}
 {{range .GlobalTrustedIPs}}
     {{.}} 0; # global trusted IP (override)
