@@ -47,6 +47,27 @@ export async function fetchWAFHostConfig(hostId: string): Promise<WAFHostConfig>
   return res.json();
 }
 
+/**
+ * The API refuses a rule exclusion whose rule description, category or reason
+ * holds a line break or another control character: each is written into a
+ * comment of the host's ModSecurity file. The reason comes from a text area and
+ * the description from a log row, so each is sent with every run of such
+ * characters folded into one space, as the server folds a stored value.
+ */
+function oneLine(text: string | undefined): string | undefined {
+  // eslint-disable-next-line no-control-regex
+  return text === undefined ? undefined : text.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, ' ').trim();
+}
+
+function exclusionText<T extends { rule_category?: string; rule_description?: string; reason?: string }>(request: T): T {
+  return {
+    ...request,
+    rule_category: oneLine(request.rule_category),
+    rule_description: oneLine(request.rule_description),
+    reason: oneLine(request.reason),
+  };
+}
+
 // Disable a rule for a proxy host
 export async function disableWAFRule(
   hostId: string,
@@ -56,7 +77,7 @@ export async function disableWAFRule(
   const res = await fetch(`${API_BASE}/waf/hosts/${hostId}/rules/${ruleId}/disable`, {
     method: 'POST',
     headers: getAuthHeaders(),
-    body: JSON.stringify(request || { rule_id: ruleId }),
+    body: JSON.stringify(request ? exclusionText(request) : { rule_id: ruleId }),
   });
   if (!res.ok) {
     const errorText = await res.text();
@@ -112,7 +133,7 @@ export async function disableWAFRuleByHost(request: DisableRuleByHostRequest): P
   const res = await fetch(`${API_BASE}/waf/rules/disable-by-host`, {
     method: 'POST',
     headers: getAuthHeaders(),
-    body: JSON.stringify(request),
+    body: JSON.stringify(exclusionText(request)),
   });
   if (!res.ok) {
     const errorText = await res.text();
@@ -211,7 +232,7 @@ export async function disableGlobalWAFRule(
   const res = await fetch(`${API_BASE}/waf/global/rules/${ruleId}/disable`, {
     method: 'POST',
     headers: getAuthHeaders(),
-    body: JSON.stringify(request || { rule_id: ruleId }),
+    body: JSON.stringify(request ? exclusionText(request) : { rule_id: ruleId }),
   });
   if (!res.ok) {
     const errorText = await res.text();
