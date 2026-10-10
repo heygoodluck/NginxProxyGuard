@@ -56,6 +56,12 @@ func (h *AccessListHandler) Create(c echo.Context) error {
 		return validationError(c, "name", err.(*ValidationError).Message)
 	}
 
+	// The rules become allow/deny lines in each host's config, and the
+	// name and rule descriptions comments beside them.
+	if err := model.ValidateCreateAccessListRequest(&req); err != nil {
+		return badRequestError(c, trimInvalidInputPrefix(err))
+	}
+
 	list, err := h.repo.Create(c.Request().Context(), &req)
 	if err != nil {
 		return databaseError(c, "create access list", err)
@@ -90,6 +96,9 @@ func (h *AccessListHandler) Update(c echo.Context) error {
 		if err := ValidateStringLength(*req.Name, MaxNameLength, "name"); err != nil {
 			return validationError(c, "name", err.(*ValidationError).Message)
 		}
+	}
+	if err := model.ValidateUpdateAccessListRequest(&req); err != nil {
+		return badRequestError(c, trimInvalidInputPrefix(err))
 	}
 
 	list, err := h.repo.Update(c.Request().Context(), id, &req)

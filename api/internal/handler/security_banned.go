@@ -10,6 +10,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"nginx-proxy-guard/internal/config"
+	"nginx-proxy-guard/internal/model"
 	"nginx-proxy-guard/internal/service"
 )
 
@@ -54,6 +55,12 @@ func (h *SecurityHandler) BanIP(c echo.Context) error {
 
 	if !ValidateIPAddress(req.IPAddress) && !ValidateCIDR(req.IPAddress) {
 		return badRequestError(c, "Invalid IP address format. Must be a valid IPv4, IPv6, or CIDR notation")
+	}
+
+	// The reason is written after the address as a "#" comment in the
+	// generated config of every host the ban covers.
+	if err := model.ValidateSingleLine("reason", req.Reason, 0); err != nil {
+		return badRequestError(c, trimInvalidInputPrefix(err))
 	}
 
 	// Get user info from context

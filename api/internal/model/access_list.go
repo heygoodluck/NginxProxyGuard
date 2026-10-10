@@ -1,6 +1,10 @@
 package model
 
-import "time"
+import (
+	"fmt"
+	"strings"
+	"time"
+)
 
 // AccessList represents a reusable access control list
 type AccessList struct {
@@ -58,4 +62,72 @@ type AccessListListResponse struct {
 	Page       int          `json:"page"`
 	PerPage    int          `json:"per_page"`
 	TotalPages int          `json:"total_pages"`
+}
+
+// An access list is written into the nginx config of every proxy host that
+// uses it: each rule as an "allow" or "deny" line, the list's name and each
+// rule's description as "#" comments.
+
+// accessListRuleMaxDescription bounds a rule description, which sits in a "#"
+// comment after its rule: nginx refuses a comment line of 4 KB or more, and
+// the config generator writes at most 1 KB of one.
+const accessListRuleMaxDescription = 1000
+
+// IsAccessListDirective reports whether d is a directive an access list rule
+// can use.
+func IsAccessListDirective(d string) bool {
+	return d == "allow" || d == "deny"
+}
+
+// IsAccessListAddress reports whether a is an address nginx's allow and deny
+// directives take: an IP address, a CIDR range, or "all".
+func IsAccessListAddress(a string) bool {
+	return a == "all" || IsIPOrCIDR(a)
+}
+
+// ValidateCreateAccessListRequest checks what a new access list writes into
+// the config. Whether the name is present and short enough is the handler's
+// check.
+func ValidateCreateAccessListRequest(req *CreateAccessListRequest) error {
+	if err := ValidateSingleLine("name", req.Name, 0); err != nil {
+		return err
+	}
+	if err := ValidateSingleLine("description", req.Description, 0); err != nil {
+		return err
+	}
+	return validateAccessListItems(req.Items)
+}
+
+// ValidateUpdateAccessListRequest checks the fields an update sends.
+func ValidateUpdateAccessListRequest(req *UpdateAccessListRequest) error {
+	if req.Name != nil {
+		if err := ValidateSingleLine("name", *req.Name, 0); err != nil {
+			return err
+		}
+	}
+	if req.Description != nil {
+		if err := ValidateSingleLine("description", *req.Description, 0); err != nil {
+			return err
+		}
+	}
+	return validateAccessListItems(req.Items)
+}
+
+// validateAccessListItems checks each rule. An address is trimmed of
+// surrounding whitespace first and saved that way.
+func validateAccessListItems(items []CreateAccessListItemRequest) error {
+	for i := range items {
+		item := &items[i]
+		item.Address = strings.TrimSpace(item.Address)
+		if !IsAccessListDirective(item.Directive) {
+			return fmt.Errorf("%w: items[%d].directive must be allow or deny", ErrInvalidInput, i)
+		}
+		if !IsAccessListAddress(item.Address) {
+			return fmt.Errorf("%w: items[%d].address %q must be an IP address, a CIDR range or all", ErrInvalidInput, i, item.Address)
+		}
+		if err := ValidateSingleLine(fmt.Sprintf("items[%d].description", i), item.Description, accessListRuleMaxDescription); err != nil {
+			return err
+		}
+	}
+	return nil
 }

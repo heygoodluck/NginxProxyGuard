@@ -103,6 +103,9 @@ func (h *CloudProviderHandler) CreateProvider(c echo.Context) error {
 	if req.Name == "" || req.Slug == "" || len(req.IPRanges) == 0 {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Name, slug, and at least one IP range are required"})
 	}
+	if err := model.ValidateCloudIPRanges(req.IPRanges); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": trimInvalidInputPrefix(err)})
+	}
 
 	provider, err := h.repo.Create(c.Request().Context(), &req)
 	if err != nil {
@@ -126,6 +129,11 @@ func (h *CloudProviderHandler) UpdateProvider(c echo.Context) error {
 	var req model.UpdateCloudProviderRequest
 	if err := c.Bind(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid request body"})
+	}
+	if req.IPRanges != nil {
+		if err := model.ValidateCloudIPRanges(*req.IPRanges); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": trimInvalidInputPrefix(err)})
+		}
 	}
 
 	provider, err := h.repo.Update(c.Request().Context(), slug, &req)

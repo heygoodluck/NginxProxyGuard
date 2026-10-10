@@ -54,6 +54,9 @@ func (h *GeoHandler) UpdateGlobal(c echo.Context) error {
 	if req.Mode != nil && *req.Mode != "whitelist" && *req.Mode != "blacklist" {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Mode must be 'whitelist' or 'blacklist'"})
 	}
+	if err := model.ValidateGeoLists(req.Countries, req.AllowedIPs); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": trimInvalidInputPrefix(err)})
+	}
 
 	g, err := h.globalGeoRepo.Upsert(c.Request().Context(), &req)
 	if err != nil {
@@ -125,6 +128,9 @@ func (h *GeoHandler) SetForProxyHost(c echo.Context) error {
 	if req.Mode != "whitelist" && req.Mode != "blacklist" {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Mode must be 'whitelist' or 'blacklist'"})
 	}
+	if err := model.ValidateGeoLists(req.Countries, req.AllowedIPs); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": trimInvalidInputPrefix(err)})
+	}
 
 	geo, err := h.geoRepo.Upsert(c.Request().Context(), proxyHostID, &req)
 	if err != nil {
@@ -148,6 +154,9 @@ func (h *GeoHandler) UpdateForProxyHost(c echo.Context) error {
 	var req model.UpdateGeoRestrictionRequest
 	if err := json.NewDecoder(c.Request().Body).Decode(&req); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid request body"})
+	}
+	if err := model.ValidateGeoLists(req.Countries, req.AllowedIPs); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": trimInvalidInputPrefix(err)})
 	}
 
 	geo, err := h.geoRepo.Update(c.Request().Context(), proxyHostID, &req)

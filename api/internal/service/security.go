@@ -849,6 +849,10 @@ func (s *SecurityService) GetSecurityHeaders(ctx context.Context, proxyHostID st
 }
 
 func (s *SecurityService) UpsertSecurityHeaders(ctx context.Context, proxyHostID string, req *model.CreateSecurityHeadersRequest) (*model.SecurityHeaders, error) {
+	// The values go into add_header directives of the host's config.
+	if err := model.ValidateCreateSecurityHeadersRequest(req); err != nil {
+		return nil, err
+	}
 	headers, err := s.secHeadersRepo.Upsert(ctx, proxyHostID, req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to upsert security headers: %w", err)
@@ -878,6 +882,9 @@ func (s *SecurityService) GetGlobalSecurityHeaders(ctx context.Context) (*model.
 // UpdateGlobalSecurityHeaders updates the global security-headers default and
 // regenerates every inheriting host so the new default takes effect (#198).
 func (s *SecurityService) UpdateGlobalSecurityHeaders(ctx context.Context, req *model.UpdateGlobalSecurityHeadersRequest) (*model.GlobalSecurityHeaders, error) {
+	if err := model.ValidateUpdateGlobalSecurityHeadersRequest(req); err != nil {
+		return nil, err
+	}
 	if s.globalSecHeadersRepo == nil {
 		return nil, fmt.Errorf("global security headers is not available")
 	}

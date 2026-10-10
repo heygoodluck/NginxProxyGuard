@@ -1,6 +1,10 @@
 package model
 
-import "time"
+import (
+	"fmt"
+	"strings"
+	"time"
+)
 
 // GeoRestriction represents geo-blocking settings for a proxy host
 type GeoRestriction struct {
@@ -320,4 +324,53 @@ var CommonCountryCodes = map[string]string{
 	"ZA": "South Africa",
 	"ZM": "Zambia",
 	"ZW": "Zimbabwe",
+}
+
+// A geo restriction's countries are joined into the regex of an if condition
+// in the config of each host it applies to (^(KR|CN)$), and each priority
+// allow entry is compared with the client address and listed in the host's
+// ModSecurity file. Both are written as they are.
+
+// ValidateGeoLists checks the countries and priority allow entries of a per
+// host geo restriction or of the global default, trimming each entry (and
+// saving it trimmed). A nil slice is a field the request did not send.
+//
+// A country must be a code from CommonCountryCodes, the list the country
+// picker offers, and an entry an IP address or a CIDR range.
+func ValidateGeoLists(countries, allowedIPs []string) error {
+	for i, c := range countries {
+		if _, ok := CommonCountryCodes[c]; !ok {
+			return fmt.Errorf("%w: countries[%d] %.20q is not a two-letter ISO 3166-1 country code", ErrInvalidInput, i, c)
+		}
+	}
+	for i := range allowedIPs {
+		allowedIPs[i] = strings.TrimSpace(allowedIPs[i])
+		if !IsIPOrCIDR(allowedIPs[i]) {
+			return fmt.Errorf("%w: allowed_ips[%d] %.60q is not an IP address or CIDR range", ErrInvalidInput, i, allowedIPs[i])
+		}
+	}
+	return nil
+}
+
+// UsableGeoLists returns the countries and priority allow entries
+// ValidateGeoLists accepts (entries trimmed), and the rest, for a restore that
+// keeps what it can.
+func UsableGeoLists(countries, allowedIPs []string) (validCountries, validIPs, dropped []string) {
+	validCountries = countries[:0:0]
+	for _, c := range countries {
+		if _, ok := CommonCountryCodes[c]; ok {
+			validCountries = append(validCountries, c)
+		} else {
+			dropped = append(dropped, c)
+		}
+	}
+	validIPs = allowedIPs[:0:0]
+	for _, ip := range allowedIPs {
+		if trimmed := strings.TrimSpace(ip); IsIPOrCIDR(trimmed) {
+			validIPs = append(validIPs, trimmed)
+		} else {
+			dropped = append(dropped, ip)
+		}
+	}
+	return validCountries, validIPs, dropped
 }

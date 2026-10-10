@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
@@ -147,6 +148,9 @@ func (h *SecurityHandler) UpsertSecurityHeaders(c echo.Context) error {
 
 	headers, err := h.securityService.UpsertSecurityHeaders(c.Request().Context(), proxyHostID, &req)
 	if err != nil {
+		if errors.Is(err, model.ErrInvalidInput) {
+			return badRequestError(c, trimInvalidInputPrefix(err))
+		}
 		return databaseError(c, "upsert security headers", err)
 	}
 
@@ -194,6 +198,9 @@ func (h *SecurityHandler) UpdateGlobalSecurityHeaders(c echo.Context) error {
 
 	g, err := h.securityService.UpdateGlobalSecurityHeaders(c.Request().Context(), &req)
 	if err != nil {
+		if errors.Is(err, model.ErrInvalidInput) {
+			return badRequestError(c, trimInvalidInputPrefix(err))
+		}
 		return internalError(c, "update global security headers", err)
 	}
 

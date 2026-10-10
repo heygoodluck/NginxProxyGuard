@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -37,6 +38,13 @@ func (h *SecurityHandler) UpsertURIBlock(c echo.Context) error {
 		if invalid := ValidateIPList(req.ExceptionIPs); len(invalid) > 0 {
 			return badRequestError(c, fmt.Sprintf("Invalid IP address(es) in exception_ips: %s", strings.Join(invalid, ", ")))
 		}
+	}
+	var stored []model.URIBlockRule
+	if cur, err := h.securityService.GetURIBlock(c.Request().Context(), proxyHostID); err == nil && cur != nil {
+		stored = cur.Rules
+	}
+	if err := validateChangedURIBlockRules(req.Rules, stored); err != nil {
+		return badRequestError(c, err.Error())
 	}
 
 	uriBlock, err := h.securityService.UpsertURIBlock(c.Request().Context(), proxyHostID, &req, skipReload)
@@ -82,14 +90,14 @@ func (h *SecurityHandler) AddURIBlockRule(c echo.Context) error {
 	if req.Pattern == "" {
 		return badRequestError(c, "pattern is required")
 	}
-	if req.MatchType == model.URIMatchRegex {
-		if err := ValidateRegexPattern(req.Pattern); err != nil {
-			return badRequestError(c, fmt.Sprintf("Invalid regex pattern: %v", err))
-		}
-	}
 	if req.MatchType == "" {
 		req.MatchType = model.URIMatchPrefix
 	}
+	rule := model.URIBlockRule{Pattern: req.Pattern, MatchType: req.MatchType, Description: req.Description}
+	if err := validateURIBlockRule(&rule); err != nil {
+		return badRequestError(c, err.Error())
+	}
+	req.Pattern = rule.Pattern
 
 	uriBlock, err := h.securityService.AddURIBlockRule(c.Request().Context(), proxyHostID, &req)
 	if err != nil {
@@ -150,14 +158,14 @@ func (h *SecurityHandler) BulkAddURIBlockRule(c echo.Context) error {
 	if req.Pattern == "" {
 		return badRequestError(c, "pattern is required")
 	}
-	if req.MatchType == string(model.URIMatchRegex) {
-		if err := ValidateRegexPattern(req.Pattern); err != nil {
-			return badRequestError(c, fmt.Sprintf("Invalid regex pattern: %v", err))
-		}
-	}
 	if req.MatchType == "" {
 		req.MatchType = string(model.URIMatchExact)
 	}
+	rule := model.URIBlockRule{Pattern: req.Pattern, MatchType: model.URIMatchType(req.MatchType), Description: req.Description}
+	if err := validateURIBlockRule(&rule); err != nil {
+		return badRequestError(c, err.Error())
+	}
+	req.Pattern = rule.Pattern
 
 	ctx := c.Request().Context()
 
@@ -227,6 +235,13 @@ func (h *SecurityHandler) UpdateGlobalURIBlock(c echo.Context) error {
 			return badRequestError(c, fmt.Sprintf("Invalid IP address(es) in exception_ips: %s", strings.Join(invalid, ", ")))
 		}
 	}
+	var stored []model.URIBlockRule
+	if cur, err := h.securityService.GetGlobalURIBlock(c.Request().Context()); err == nil && cur != nil {
+		stored = cur.Rules
+	}
+	if err := validateChangedURIBlockRules(req.Rules, stored); err != nil {
+		return badRequestError(c, err.Error())
+	}
 
 	block, err := h.securityService.UpdateGlobalURIBlock(c.Request().Context(), &req)
 	if err != nil {
@@ -256,11 +271,11 @@ func (h *SecurityHandler) AddGlobalURIBlockRule(c echo.Context) error {
 	if req.MatchType == "" {
 		req.MatchType = model.URIMatchPrefix
 	}
-	if req.MatchType == model.URIMatchRegex {
-		if err := ValidateRegexPattern(req.Pattern); err != nil {
-			return c.JSON(http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("Invalid regex pattern: %v", err)})
-		}
+	rule := model.URIBlockRule{Pattern: req.Pattern, MatchType: req.MatchType, Description: req.Description}
+	if err := validateURIBlockRule(&rule); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
+	req.Pattern = rule.Pattern
 
 	block, err := h.securityService.AddGlobalURIBlockRule(c.Request().Context(), &req)
 	if err != nil {
@@ -299,4 +314,48 @@ func (h *SecurityHandler) RemoveGlobalURIBlockRule(c echo.Context) error {
 	})
 
 	return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// validateURIBlockRule checks a rule that a request adds or changes: the
+// model's check (model.ValidateURIBlockRule, which trims the pattern), and a
+// regex must compile within the regex limits. Each rule becomes a location
+// block in the config of every host it applies to.
+func validateURIBlockRule(rule *model.URIBlockRule) error {
+	if err := model.ValidateURIBlockRule(rule); err != nil {
+		return errors.New(trimInvalidInputPrefix(err))
+	}
+	if rule.MatchType == model.URIMatchRegex {
+		if err := ValidateRegexPattern(rule.Pattern); err != nil {
+			return fmt.Errorf("Invalid regex pattern: %v", err)
+		}
+	}
+	return nil
+}
+
+// validateChangedURIBlockRules checks the rules of a save that replaces the
+// whole list, which the UI sends with every change. A rule identical to a
+// stored one (pattern, match type and description) is not checked again: an
+// older version may have saved what is now refused, and one such rule must not
+// make the rest of the list impossible to edit. The config generator leaves a
+// stored rule out if it cannot be written (see uriBlockRules in the nginx
+// package). An empty match type is a prefix rule, as the template renders it.
+func validateChangedURIBlockRules(rules, stored []model.URIBlockRule) error {
+	type ruleKey struct{ pattern, matchType, description string }
+	unchanged := make(map[ruleKey]bool, len(stored))
+	for _, r := range stored {
+		unchanged[ruleKey{r.Pattern, string(r.MatchType), r.Description}] = true
+	}
+	for i := range rules {
+		rule := &rules[i]
+		if unchanged[ruleKey{rule.Pattern, string(rule.MatchType), rule.Description}] {
+			continue
+		}
+		if rule.MatchType == "" {
+			rule.MatchType = model.URIMatchPrefix
+		}
+		if err := validateURIBlockRule(rule); err != nil {
+			return fmt.Errorf("rules[%d]: %w", i, err)
+		}
+	}
+	return nil
 }

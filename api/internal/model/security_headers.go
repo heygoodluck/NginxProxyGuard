@@ -1,6 +1,10 @@
 package model
 
-import "time"
+import (
+	"fmt"
+	"strings"
+	"time"
+)
 
 // SecurityHeaders represents security headers configuration for a proxy host
 type SecurityHeaders struct {
@@ -130,4 +134,128 @@ var ValidReferrerPolicies = []string{
 	"strict-origin",
 	"strict-origin-when-cross-origin",
 	"unsafe-url",
+}
+
+// Each value below is written into the double-quoted argument of an
+// add_header directive, in the config of every host the headers apply to.
+
+// maxSecurityHeaderValue bounds a value as nginx reads that argument: it
+// refuses one of 4 KB or more ("too long parameter").
+const maxSecurityHeaderValue = 4000
+
+// What a restore puts in place of a value it cannot use: the repository's
+// defaults for an empty x_frame_options or referrer_policy.
+const (
+	defaultXFrameOptions  = "SAMEORIGIN"
+	defaultReferrerPolicy = "strict-origin-when-cross-origin"
+)
+
+// ValidateSecurityHeaderValues checks the free-form values of a per-host or
+// global security headers request. An empty value is accepted for each: the
+// repositories read it as the default (x_frame_options, referrer_policy) or as
+// no header (the two policies).
+func ValidateSecurityHeaderValues(xFrameOptions, referrerPolicy, contentSecurityPolicy, permissionsPolicy string) error {
+	if err := validateXFrameOptions(xFrameOptions); err != nil {
+		return err
+	}
+	if err := validateReferrerPolicy(referrerPolicy); err != nil {
+		return err
+	}
+	if err := validateContentSecurityPolicy(contentSecurityPolicy); err != nil {
+		return err
+	}
+	return validatePermissionsPolicy(permissionsPolicy)
+}
+
+// ValidateCreateSecurityHeadersRequest checks a per-host security headers save.
+func ValidateCreateSecurityHeadersRequest(req *CreateSecurityHeadersRequest) error {
+	return ValidateSecurityHeaderValues(req.XFrameOptions, req.ReferrerPolicy, req.ContentSecurityPolicy, req.PermissionsPolicy)
+}
+
+// ValidateUpdateGlobalSecurityHeadersRequest checks a global default save.
+func ValidateUpdateGlobalSecurityHeadersRequest(req *UpdateGlobalSecurityHeadersRequest) error {
+	return ValidateSecurityHeaderValues(req.XFrameOptions, req.ReferrerPolicy, req.ContentSecurityPolicy, req.PermissionsPolicy)
+}
+
+// ResetUnusableSecurityHeaderValues replaces each value
+// ValidateSecurityHeaderValues refuses with what a restore uses instead
+// (SAMEORIGIN, strict-origin-when-cross-origin, no header for the two
+// policies) and returns the names of the values it replaced.
+func ResetUnusableSecurityHeaderValues(xFrameOptions, referrerPolicy, contentSecurityPolicy, permissionsPolicy *string) []string {
+	var reset []string
+	if validateXFrameOptions(*xFrameOptions) != nil {
+		*xFrameOptions = defaultXFrameOptions
+		reset = append(reset, "x_frame_options")
+	}
+	if validateReferrerPolicy(*referrerPolicy) != nil {
+		*referrerPolicy = defaultReferrerPolicy
+		reset = append(reset, "referrer_policy")
+	}
+	if validateContentSecurityPolicy(*contentSecurityPolicy) != nil {
+		*contentSecurityPolicy = ""
+		reset = append(reset, "content_security_policy")
+	}
+	if validatePermissionsPolicy(*permissionsPolicy) != nil {
+		*permissionsPolicy = ""
+		reset = append(reset, "permissions_policy")
+	}
+	return reset
+}
+
+func validateXFrameOptions(v string) error {
+	if v == "" || containsFold(ValidXFrameOptions, v) {
+		return nil
+	}
+	return fmt.Errorf("%w: x_frame_options must be one of %s", ErrInvalidInput, strings.Join(ValidXFrameOptions, ", "))
+}
+
+// validateReferrerPolicy accepts one policy from ValidReferrerPolicies, or a
+// comma-separated list of them (browsers use the last one they know).
+func validateReferrerPolicy(v string) error {
+	if v == "" {
+		return nil
+	}
+	for _, token := range strings.Split(v, ",") {
+		if !containsFold(ValidReferrerPolicies, strings.Trim(token, " ")) {
+			return fmt.Errorf("%w: referrer_policy must be one of %s, or a comma-separated list of them", ErrInvalidInput, strings.Join(ValidReferrerPolicies, ", "))
+		}
+	}
+	return nil
+}
+
+// validateContentSecurityPolicy refuses a line break or control character, a
+// double quote and a backslash. A policy quotes its keywords and sources with
+// single quotes and has no use for either; ";" separates its directives and is
+// fine inside the quoted argument.
+func validateContentSecurityPolicy(v string) error {
+	if err := ValidateSingleLine("content_security_policy", v, maxSecurityHeaderValue); err != nil {
+		return err
+	}
+	if strings.ContainsAny(v, `"\`) {
+		return fmt.Errorf("%w: content_security_policy must not contain double quotes or backslashes", ErrInvalidInput)
+	}
+	return nil
+}
+
+// validatePermissionsPolicy refuses a line break or control character. Double
+// quotes are allowed: a policy quotes its origins with them
+// (geolocation=(self "https://a.example.com")), and the config generator
+// escapes them, one more byte each, counted in the length.
+func validatePermissionsPolicy(v string) error {
+	if err := ValidateSingleLine("permissions_policy", v, 0); err != nil {
+		return err
+	}
+	if len(v)+strings.Count(v, `"`)+strings.Count(v, `\`) > maxSecurityHeaderValue {
+		return fmt.Errorf("%w: permissions_policy exceeds maximum length of %d", ErrInvalidInput, maxSecurityHeaderValue)
+	}
+	return nil
+}
+
+func containsFold(list []string, v string) bool {
+	for _, item := range list {
+		if strings.EqualFold(item, v) {
+			return true
+		}
+	}
+	return false
 }

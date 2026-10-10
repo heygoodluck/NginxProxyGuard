@@ -653,7 +653,16 @@ paths:
     put:
       tags: [Security]
       summary: Create or update the security headers config
-      description: Upsert. Requires the `proxy:write` scope when called with an API token.
+      description: |
+        Upsert. Requires the `proxy:write` scope when called with an API token.
+
+        The values are written into the host's nginx config, and anything else is
+        answered with 400: `x_frame_options` must be DENY or SAMEORIGIN,
+        `referrer_policy` a policy name or a comma-separated list of them,
+        `content_security_policy` must not contain a double quote, a backslash, a
+        line break or another control character, and `permissions_policy` no line
+        break or control character (double quotes around origins are fine). Each
+        policy is at most 4000 bytes.
       security:
         - BearerAuth: []
       parameters:
@@ -721,6 +730,10 @@ paths:
         true, `allow_search_bots` false, `challenge_mode` false, `disable_global`
         false). Use PUT for a partial update. Requires the `proxy:write` scope
         when called with an API token.
+
+        Each `countries` entry must be a two-letter code from GET /geo/countries,
+        and each `allowed_ips` entry an IP address or CIDR range (surrounding
+        spaces are trimmed); anything else is answered with 400.
       security:
         - BearerAuth: []
       parameters:
@@ -774,6 +787,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GeoRestriction'
+        '400':
+          description: A `countries` or `allowed_ips` entry fails the checks described for POST
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '404':
           description: Geo restriction not found for this host
           content:
@@ -1999,7 +2018,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/BannedIP'
         '400':
-          description: ip_address missing or not a valid IPv4/IPv6/CIDR value
+          description: ip_address missing or not a valid IPv4/IPv6/CIDR value, or reason holds a line break or control character
 
     delete:
       tags: [Security]
@@ -2371,7 +2390,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/AccessList'
         '400':
-          description: name missing or too long
+          description: |
+            name missing or too long; a line break or control character in `name`,
+            `description` or a rule's `description` (at most 1000 bytes); or a rule whose
+            `directive` is not `allow` or `deny`, or whose `address` is not an IP address,
+            a CIDR range or `all` (surrounding spaces are trimmed)
   /access-lists/{id}:
     get:
       tags: [Access Lists]
@@ -2424,6 +2447,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AccessList'
+        '400':
+          description: A field sent fails the checks described for POST /access-lists
         '404':
           description: Access list not found
 
@@ -2569,6 +2594,10 @@ paths:
       responses:
         '201':
           description: Cloud provider created
+        '400':
+          description: |
+            name, slug or ip_ranges missing, or an `ip_ranges` entry that is not an IP
+            address or CIDR range (surrounding spaces are trimmed)
   /cloud-providers/{slug}:
     get:
       tags: [Cloud Providers]
@@ -2605,6 +2634,8 @@ paths:
       responses:
         '200':
           description: Cloud provider updated
+        '400':
+          description: An `ip_ranges` entry that is not an IP address or CIDR range
 
     delete:
       tags: [Cloud Providers]
@@ -2650,6 +2681,11 @@ paths:
       responses:
         '201':
           description: Exploit rule created
+        '400':
+          description: |
+            A required field is missing, category, pattern_type or severity is not one of
+            its values, the pattern does not compile, or name is longer than 100 bytes or
+            holds a line break or control character
   /exploit-rules/{id}:
     get:
       tags: [Exploit Rules]
@@ -2691,6 +2727,8 @@ paths:
       responses:
         '200':
           description: Exploit rule updated
+        '400':
+          description: A field sent fails the checks described for POST /exploit-rules
 
     delete:
       tags: [Exploit Rules]
@@ -2756,6 +2794,11 @@ paths:
         `temp-` prefixed id get a fresh UUID. Every entry in `exception_ips` is
         validated as an IP or CIDR. Requires the `proxy:write` scope when called
         with an API token.
+
+        Rules are checked as for POST /proxy-hosts/{id}/uri-block/rules, except
+        that a rule identical to a stored one (same pattern, match_type and
+        description) is not checked again, so a list saved by an older version
+        stays editable.
       security:
         - BearerAuth: []
       parameters:
@@ -2780,7 +2823,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/URIBlockConfig'
         '400':
-          description: Invalid IP address(es) in exception_ips, or malformed body
+          description: Invalid IP address(es) in exception_ips, a new or changed rule that fails the rule checks (named as `rules[i]`), or malformed body
           content:
             application/json:
               schema:
@@ -2821,6 +2864,11 @@ paths:
       responses:
         '200':
           description: Global URI block settings updated
+        '400':
+          description: |
+            Invalid IP address(es) in exception_ips, or a new or changed rule that fails the
+            checks described for POST /proxy-hosts/{id}/uri-block/rules (a rule identical to
+            a stored one is not checked again)
 
   # ============================================================================
   # Fail2ban
@@ -3585,7 +3633,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/GlobalGeoRestriction'
         '400':
-          description: Malformed body, or `mode` is neither `whitelist` nor `blacklist`
+          description: |
+            Malformed body, `mode` is neither `whitelist` nor `blacklist`, a `countries`
+            entry is not a two-letter code from GET /geo/countries, or an `allowed_ips`
+            entry is not an IP address or CIDR range
           content:
             application/json:
               schema:
@@ -3816,6 +3867,8 @@ paths:
         `content_security_policy`, `permissions_policy` and `custom_headers` are
         the exception — they are always written from the request, so omitting any
         of them **clears** the stored value.
+
+        The values are checked as for PUT /proxy-hosts/{id}/security-headers.
 
         On success all proxy host configs are regenerated before the response is
         sent.
@@ -4169,7 +4222,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/GlobalURIBlock'
         '400':
-          description: '`pattern` missing, or `match_type` is `regex` and the pattern does not compile'
+          description: '`pattern` missing, or the rule fails the checks described for POST /proxy-hosts/{id}/uri-block/rules'
           content:
             application/json:
               schema:
@@ -8038,6 +8091,14 @@ paths:
         server-generated. Adding a rule whose pattern and match_type already exist
         is a no-op that returns the unchanged config. Returns the whole updated
         URI block. Requires the `proxy:write` scope when called with an API token.
+
+        A rule becomes an nginx location block. `match_type` must be `exact`,
+        `prefix` or `regex`. An `exact` or `prefix` pattern must be a URL path
+        starting with `/` (at most 2048 bytes); a `regex` pattern must compile.
+        Neither may contain spaces, control characters, quotes, a backslash in a
+        path, or any of `; { } #` (so a regex cannot use `{n}` quantifiers).
+        Surrounding spaces are trimmed. A `description` must be one line of at
+        most 1000 bytes.
       security:
         - BearerAuth: []
       parameters:
@@ -8056,7 +8117,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/URIBlockConfig'
         '400':
-          description: Missing pattern or invalid regex
+          description: Missing pattern, invalid regex, or a pattern, match_type or description that fails the rule checks
           content:
             application/json:
               schema:
@@ -8297,9 +8358,9 @@ paths:
                 $ref: '#/components/schemas/BulkAddURIBlockRuleResult'
         '400':
           description: |
-            Body did not decode, `pattern` was empty, `pattern` is an invalid regex
-            while `match_type` is `regex`, or no target hosts were found (empty
-            `host_ids` with no enabled hosts).
+            Body did not decode, `pattern` was empty, the rule fails the checks
+            described for POST /proxy-hosts/{id}/uri-block/rules, or no target hosts
+            were found (empty `host_ids` with no enabled hosts).
           content:
             application/json:
               schema:

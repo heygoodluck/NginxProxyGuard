@@ -1,6 +1,8 @@
 package model
 
 import (
+	"fmt"
+	"strings"
 	"time"
 )
 
@@ -94,4 +96,17 @@ var RegionInfo = map[string]struct {
 	"cn":    {Name: "China", Flag: "🇨🇳", Country: "CN"},
 	"kr":    {Name: "South Korea", Flag: "🇰🇷", Country: "KR"},
 	"other": {Name: "Other", Flag: "🌍", Country: ""},
+}
+
+// ValidateCloudIPRanges trims each IP range of a cloud provider and refuses
+// one that is not an IP address or a CIDR range. The ranges are written one
+// per line into a geo block of every host that blocks the provider.
+func ValidateCloudIPRanges(ranges []string) error {
+	for i := range ranges {
+		ranges[i] = strings.TrimSpace(ranges[i])
+		if !IsIPOrCIDR(ranges[i]) {
+			return fmt.Errorf("%w: ip_ranges[%d] %.60q is not an IP address or CIDR range", ErrInvalidInput, i, ranges[i])
+		}
+	}
+	return nil
 }
