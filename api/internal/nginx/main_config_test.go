@@ -514,3 +514,55 @@ func TestMainConfig_FailsWhenOldZoneNamesCannotBeRead(t *testing.T) {
 		t.Errorf("nginx.conf was written although the old zone names could not be read")
 	}
 }
+
+// The aliases render only inside the limit blocks, so with both limits off
+// the old names are not read, and a failed read cannot block the render.
+func TestMainConfig_OldZoneNamesNotReadWithLimitsOff(t *testing.T) {
+	s := baselineSettings()
+	s.LimitConnEnabled, s.LimitReqEnabled = false, false
+	m := &Manager{}
+	dir := t.TempDir()
+	m.configPath = filepath.Join(dir, "conf.d")
+	if err := os.MkdirAll(m.configPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	read := false
+	m.SetLegacyZoneRefSource(func(context.Context) ([]string, error) {
+		read = true
+		return nil, errors.New("db down")
+	})
+	if err := m.GenerateMainNginxConfig(context.Background(), s, nil, false, TrustedProxyConfig{}); err != nil {
+		t.Fatalf("GenerateMainNginxConfig: %v", err)
+	}
+	if read {
+		t.Error("the old zone names were read with both global limits off")
+	}
+}
+
+// A live old name in the custom HTTP config needs its alias as much as one in
+// a host's Advanced Config.
+func TestMainConfig_OldGlobalZoneNameInCustomHTTPConfigGetsAlias(t *testing.T) {
+	s := baselineSettings()
+	s.LimitConnEnabled, s.LimitConnZoneSize, s.LimitConnPerIP = true, "10m", 50
+	s.CustomHTTPConfig = "limit_conn global_conn_limit 5;"
+	if !strings.Contains(renderOnly(t, s), "limit_conn_zone $global_conn_key zone=global_conn_limit:10m;") {
+		t.Error("global_conn_limit is used by the custom HTTP config but not defined")
+	}
+}
+
+// The zones always key on $global_conn_key and $global_req_key, so the maps
+// that define those variables are written with an empty trusted list too.
+func TestMainConfig_KeyMapsWrittenWithoutTrustedIPs(t *testing.T) {
+	s := baselineSettings()
+	s.LimitConnEnabled, s.LimitConnZoneSize, s.LimitConnPerIP = true, "10m", 50
+	s.LimitReqEnabled, s.LimitReqZoneSize, s.LimitReqRate, s.LimitReqBurst = true, "10m", 50, 100
+	out := renderOnly(t, s)
+	for _, want := range []string{
+		"map $global_trusted_ip $global_conn_key {",
+		"map $global_trusted_ip $global_req_key {",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+}

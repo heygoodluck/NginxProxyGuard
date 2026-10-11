@@ -11,6 +11,7 @@ import (
 
 	"nginx-proxy-guard/internal/config"
 	"nginx-proxy-guard/internal/nginx"
+	"nginx-proxy-guard/internal/repository"
 	"nginx-proxy-guard/internal/service"
 )
 
@@ -222,23 +223,51 @@ func applyWhenNginxUp(ctx context.Context, c *Container, steps []nginx.DeferredS
 	}()
 }
 
-// warnLegacyZoneNames tells the operator, at every start while it is so, that
-// Advanced Config or the custom HTTP config uses a rate limit zone by its name
-// from before v2.62.0. NPG keeps those names defined as aliases
-// (nginx.LegacyZoneRefs), but they count separately, and the first reload
-// after the upgrade can be refused once where such a zone's key changed.
+// warnLegacyZoneNames tells the operator, at every start while it is so,
+// where Advanced Config or the custom HTTP config uses a rate limit zone by
+// its name from before v2.62.0 (legacyZoneWarnings). One query and one
+// settings read.
 func warnLegacyZoneNames(ctx context.Context, c *Container) {
-	texts, err := c.Repositories.ProxyHost.ListLegacyZoneRefTexts(ctx)
+	uses, err := c.Repositories.ProxyHost.ListLegacyZoneRefUses(ctx)
 	if err != nil {
 		log.Printf("[Startup] Warning: could not read Advanced Config for old rate limit zone names: %v", err)
 	}
+	var customHTTPConfig string
 	if settings, err := c.Repositories.GlobalSettings.Get(ctx); err == nil && settings != nil {
-		texts = append(texts, settings.CustomHTTPConfig)
+		customHTTPConfig = settings.CustomHTTPConfig
 	}
-	refs := nginx.FindLegacyZoneRefs(texts...)
-	if !refs.Any() {
-		return
+	for _, line := range legacyZoneWarnings(uses, customHTTPConfig) {
+		log.Printf("[WARN] [Startup] %s", line)
 	}
+}
+
+// legacyZoneWarnings returns the startup warning's lines: one per place that
+// uses an old zone name (a host's Advanced Config, named by the host's
+// domain, or the custom HTTP config), sorted, then one line of advice. NPG
+// keeps those names defined as aliases (nginx.LegacyZoneRefs), but they count
+// separately, and the first reload after the upgrade can be refused once
+// where such a zone's key changed. Nil when no place uses one.
+func legacyZoneWarnings(uses []repository.LegacyZoneRefUse, customHTTPConfig string) []string {
+	const what = " uses rate limit zone names from before v2.62.0: "
+	var lines []string
+	for _, u := range uses {
+		if names := legacyZoneNameList(nginx.FindLegacyZoneRefs(u.Text)); names != "" {
+			lines = append(lines, "host "+u.Domain+"'s Advanced Config"+what+names+".")
+		}
+	}
+	if names := legacyZoneNameList(nginx.FindLegacyZoneRefs(customHTTPConfig)); names != "" {
+		lines = append(lines, "the custom HTTP config"+what+names+".")
+	}
+	if len(lines) == 0 {
+		return nil
+	}
+	sort.Strings(lines)
+	return append(lines, "Change the config to the new names. NPG keeps the old names defined as separate zones only while the matching rate limit is on. If nginx refuses the first reload after this upgrade, restart the nginx container once.")
+}
+
+// legacyZoneNameList lists the old zone names in refs with their new names,
+// sorted, or returns "" when there are none.
+func legacyZoneNameList(refs nginx.LegacyZoneRefs) string {
 	var names []string
 	for id := range refs.RateHosts {
 		names = append(names, "rate_"+id+" (now npg_rl_"+id+")")
@@ -250,7 +279,7 @@ func warnLegacyZoneNames(ctx context.Context, c *Container) {
 		names = append(names, "global_req_limit (now npg_global_req)")
 	}
 	sort.Strings(names)
-	log.Printf("[WARN] [Startup] Advanced Config or the custom HTTP config uses rate limit zone names from before v2.62.0: %s. They stay defined as separate zones; change the config to the new names. If nginx refuses the first reload after this upgrade, restart the nginx container once.", strings.Join(names, ", "))
+	return strings.Join(names, ", ")
 }
 
 // loadGlobalSettingsForStartup loads IPv6/direct-IP settings so nginx

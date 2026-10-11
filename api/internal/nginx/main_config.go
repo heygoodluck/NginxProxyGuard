@@ -658,11 +658,15 @@ func (m *Manager) GenerateMainNginxConfig(ctx context.Context, s *model.GlobalSe
 
 	var buf bytes.Buffer
 	d := buildMainConfigData(s, trustedIPs, trustedBypassWAF, proxies)
-	refs, err := m.legacyZoneRefs(ctx, s.CustomHTTPConfig)
-	if err != nil {
-		return fmt.Errorf("generate nginx.conf: %w", err)
+	// The aliases render only inside the limit blocks: with both limits off
+	// there is nothing to read the old names for.
+	if s.LimitConnEnabled || s.LimitReqEnabled {
+		refs, err := m.legacyZoneRefs(ctx, s.CustomHTTPConfig)
+		if err != nil {
+			return fmt.Errorf("generate nginx.conf: %w", err)
+		}
+		d.LegacyGlobalConnAlias, d.LegacyGlobalReqAlias = refs.GlobalConn, refs.GlobalReq
 	}
-	d.LegacyGlobalConnAlias, d.LegacyGlobalReqAlias = refs.GlobalConn, refs.GlobalReq
 	if err := tmpl.Execute(&buf, d); err != nil {
 		return fmt.Errorf("execute main nginx template: %w", err)
 	}

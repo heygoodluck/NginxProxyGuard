@@ -940,3 +940,35 @@ func (r *ProxyHostRepository) ListLegacyZoneRefTexts(ctx context.Context) ([]str
 	}
 	return texts, rows.Err()
 }
+
+// LegacyZoneRefUse is one host's Advanced Config from ListLegacyZoneRefUses.
+type LegacyZoneRefUse struct {
+	HostID string
+	Domain string // the host's first domain name, or its ID when it has none
+	Text   string // the Advanced Config
+}
+
+// ListLegacyZoneRefUses returns what ListLegacyZoneRefTexts returns, with each
+// text's host, for the startup warning that says where an old zone name is
+// used. Same rows: the same pattern, over every host, enabled or not.
+func (r *ProxyHostRepository) ListLegacyZoneRefUses(ctx context.Context) ([]LegacyZoneRefUse, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, COALESCE(domain_names[1], ''), COALESCE(advanced_config, '') FROM proxy_hosts
+		WHERE advanced_config ~ '(rate_[0-9a-f]{8}_|global_(conn|req)_limit)'`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list advanced configs: %w", err)
+	}
+	defer rows.Close()
+	var uses []LegacyZoneRefUse
+	for rows.Next() {
+		var u LegacyZoneRefUse
+		if err := rows.Scan(&u.HostID, &u.Domain, &u.Text); err != nil {
+			return nil, fmt.Errorf("failed to scan advanced config: %w", err)
+		}
+		if u.Domain == "" {
+			u.Domain = u.HostID
+		}
+		uses = append(uses, u)
+	}
+	return uses, rows.Err()
+}
