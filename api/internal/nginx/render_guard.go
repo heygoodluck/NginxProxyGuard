@@ -120,8 +120,8 @@ func uriBlockRules(rules []model.URIBlockRule) []model.URIBlockRule {
 }
 
 // renderableGeo returns g with the country codes and priority-allow addresses
-// the templates can write into their if conditions, normalized as the API
-// saves them, and g itself when every entry already is.
+// the templates can write into their if conditions and geo block, normalized
+// as the API saves them, and g itself when every entry already is.
 //
 // A country goes into the regex of a quoted condition (^(KR|CN)$) and is
 // written as model.NormalizeCountryCode gives it: in upper case, the case the
@@ -130,15 +130,15 @@ func uriBlockRules(rules []model.URIBlockRule) []model.URIBlockRule {
 // code the lookup gives that is not on the country picker's list). Anything
 // else is left out.
 //
-// An address goes into a quoted comparison, a regex built from it, and the
-// @ipMatch list of the host's ModSecurity file. It is written without the
-// whitespace around it, and left out unless it is then an IP address or a
-// CIDR range. Every form Go reads as one is kept as it is, IPv6 ranges and
-// IPv4-mapped addresses included.
+// An address goes into the host's priority allow geo block ($npg_prio_<id>)
+// and the @ipMatch list of the host's ModSecurity file. It is written once,
+// as model.NormalizeIPOrCIDR gives it after the whitespace around it is
+// removed, and left out unless it is then an IP address or a CIDR range.
 //
 // What is left out is logged. It is not a code the lookup gives or an
-// address: a comparison with it never matched, ModSecurity refused it in
-// @ipMatch, and in the country regex it changed what the condition matches.
+// address: nginx cannot read it as a network in the geo block, ModSecurity
+// refused it in @ipMatch, and in the country regex it changed what the
+// condition matches.
 func renderableGeo(hostID string, g *model.GeoRestriction) *model.GeoRestriction {
 	if g == nil {
 		return nil
@@ -172,19 +172,24 @@ func renderableCountries(hostID string, countries []string) []string {
 }
 
 // renderableAllowedIPs returns the priority-allow entries that are an IP
-// address or a CIDR range, without the whitespace around them (see
+// address or a CIDR range, normalized and without duplicates (see
 // renderableGeo).
 func renderableAllowedIPs(hostID string, ips []string) []string {
 	out := ips[:0:0]
+	seen := make(map[string]bool, len(ips))
 	for _, ip := range ips {
-		trimmed := strings.TrimSpace(ip)
-		if !model.IsIPOrCIDR(trimmed) {
+		normalized, ok := model.NormalizeIPOrCIDR(strings.TrimSpace(ip))
+		if !ok {
 			warnSkippedOnce("geo allowed ip "+hostID+" "+ip,
 				"[WARN] Host %s: priority allow entry %.60q is not an IP address or CIDR range, so it is left out of the nginx config. Edit the geo restriction to correct or remove it.",
 				hostID, ip)
 			continue
 		}
-		out = append(out, trimmed)
+		if seen[normalized] {
+			continue // a geo block warns about a network listed twice
+		}
+		seen[normalized] = true
+		out = append(out, normalized)
 	}
 	return out
 }
@@ -212,30 +217,34 @@ func renderableBans(bans []model.BannedIP) []model.BannedIP {
 	return out
 }
 
-// renderableURIBlock returns ub with the exception IPs that, without the
-// whitespace around them, are an IP address or a CIDR range, written that
-// way, and ub itself when every one already is. ub holds the exception IPs of
-// the host's URI block and of the global one, and each is written into the
-// quoted argument of an if condition in every URI block location: compared
-// with $remote_addr, or turned into a regex when it holds a "/". Any other
-// entry is left out and logged. It named no client's address: compared, it
-// matched none, a quote in it ended the argument, and as a regex it could
-// match clients it does not name. An entry with spaces around it, which the
-// API accepts, never matched; written without them now, it does.
+// renderableURIBlock returns ub with only the exception IPs that, without the
+// whitespace around them, are an IP address or a CIDR range, and ub itself
+// when its list needs no change. ub holds the exception IPs of the host's URI
+// block and of the global one, and each is written into the host's geo block
+// of exception addresses ($npg_uri_exc_<id>), normalized
+// (model.NormalizeIPOrCIDR) and without duplicates. Any other entry is left
+// out and logged. It named no client's address, and nginx cannot read it as a
+// network in the geo block. An entry with spaces around it, which the API
+// accepts, never matched; written without them now, it does.
 func renderableURIBlock(hostID string, ub *model.URIBlock) *model.URIBlock {
 	if ub == nil {
 		return nil
 	}
 	ips := ub.ExceptionIPs[:0:0]
+	seen := make(map[string]bool, len(ub.ExceptionIPs))
 	for _, ip := range ub.ExceptionIPs {
-		trimmed := strings.TrimSpace(ip)
-		if !model.IsIPOrCIDR(trimmed) {
+		normalized, ok := model.NormalizeIPOrCIDR(strings.TrimSpace(ip))
+		if !ok {
 			warnSkippedOnce("uri block exception ip "+hostID+" "+ip,
 				"[WARN] Host %s: URI block exception IP %.60q is not an IP address or CIDR range, so it is left out of the nginx config. Edit the exception IPs of the host's URI block, or of the global URI block, to correct or remove it.",
 				hostID, ip)
 			continue
 		}
-		ips = append(ips, trimmed)
+		if seen[normalized] {
+			continue // a geo block warns about a network listed twice
+		}
+		seen[normalized] = true
+		ips = append(ips, normalized)
 	}
 	if slices.Equal(ips, ub.ExceptionIPs) {
 		return ub

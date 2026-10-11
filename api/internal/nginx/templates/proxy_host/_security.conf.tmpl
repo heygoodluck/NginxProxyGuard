@@ -3,18 +3,7 @@
     # Geo Restriction ({{.GeoRestriction.Mode}}) - Direct Block Mode (processed BEFORE WAF for performance){{if .GeoRestriction.AllowPrivateIPs}} - Private IPs Allowed{{end}}{{if .GeoRestriction.AllowSearchBots}} - Search Bots Allowed{{end}}
 {{if len .GeoRestriction.AllowedIPs}}
     # Priority Allow IPs/CIDRs - bypass geo restriction if matched
-    set $geo_allowed_ip 0;
-{{range .GeoRestriction.AllowedIPs}}
-{{if isCIDR .}}
-    if ($remote_addr ~ "{{cidrToNginxPattern .}}") {
-        set $geo_allowed_ip 1;
-    }
-{{else}}
-    if ($remote_addr = "{{.}}") {
-        set $geo_allowed_ip 1;
-    }
-{{end}}
-{{end}}
+    set $geo_allowed_ip $npg_prio_{{sanitizeID .Host.ID}};
     # Apply geo restriction only if not in allowed IPs
     set $geo_block_check "";
 {{if eq .GeoRestriction.Mode "whitelist"}}
@@ -174,17 +163,9 @@
 {{end}}
 {{if len .GeoRestriction.AllowedIPs}}
     # Priority Allow IPs/CIDRs - bypass geo restriction if matched
-{{range .GeoRestriction.AllowedIPs}}
-{{if isCIDR .}}
-    if ($remote_addr ~ "{{cidrToNginxPattern .}}") {
+    if ($npg_prio_{{sanitizeID .Host.ID}} = 1) {
         set $geo_blocked 0;
     }
-{{else}}
-    if ($remote_addr = "{{.}}") {
-        set $geo_blocked 0;
-    }
-{{end}}
-{{end}}
 {{end}}
 {{if .GeoRestriction.AllowSearchBots}}
     # Allow search engine bots - bypass geo challenge
@@ -475,17 +456,9 @@
     # Priority Allow IPs bypass cloud provider blocking
     set $is_priority_allow_cloud $skip_security_for_acme;
 {{if and .GeoRestriction (len .GeoRestriction.AllowedIPs)}}
-{{range .GeoRestriction.AllowedIPs}}
-{{if isCIDR .}}
-    if ($remote_addr ~ "{{cidrToNginxPattern .}}") {
+    if ($npg_prio_{{sanitizeID .Host.ID}} = 1) {
         set $is_priority_allow_cloud 1;
     }
-{{else}}
-    if ($remote_addr = "{{.}}") {
-        set $is_priority_allow_cloud 1;
-    }
-{{end}}
-{{end}}
 {{end}}
 {{if .CloudProviderAllowSearchBots}}{{if .SearchEnginesList}}
     # Allow search engine bots to bypass cloud provider blocking
@@ -528,17 +501,9 @@
     # Also bypass for ACME challenge
     set $priority_allow $skip_security_for_acme;
 {{if and .GeoRestriction (len .GeoRestriction.AllowedIPs)}}
-{{range .GeoRestriction.AllowedIPs}}
-{{if isCIDR .}}
-    if ($remote_addr ~ "{{cidrToNginxPattern .}}") {
+    if ($npg_prio_{{sanitizeID .Host.ID}} = 1) {
         set $priority_allow 1;
     }
-{{else}}
-    if ($remote_addr = "{{.}}") {
-        set $priority_allow 1;
-    }
-{{end}}
-{{end}}
 {{end}}
 {{if .BotFilter.AllowSearchEngines}}{{if .SearchEnginesList}}
     # Allow search engine bots to bypass bot filter
@@ -661,16 +626,10 @@
             set $uri_block_exception 1;
         }
 {{end}}
-{{range $.URIBlock.ExceptionIPs}}
-{{if isCIDR .}}
-        if ($remote_addr ~ "{{cidrToNginxPattern .}}") {
+{{if $.URIBlock.ExceptionIPs}}
+        if ($npg_uri_exc_{{sanitizeID $.Host.ID}} = 1) {
             set $uri_block_exception 1;
         }
-{{else}}
-        if ($remote_addr = "{{.}}") {
-            set $uri_block_exception 1;
-        }
-{{end}}
 {{end}}
         if ($uri_block_exception = 0) {
             set $block_reason_var "uri_block";

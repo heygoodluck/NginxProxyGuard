@@ -969,9 +969,10 @@ func goldenCases() []goldenCase {
 		})
 	}
 
-	// 17-20) priority allow. Pinned as rendered before v2.62.0 first, so the
-	// change to geo variables shows up as a reviewable diff of these files.
-	// The entries cover an exact IPv4, a /32, a host-bits CIDR, an IPv6 range,
+	// 18-21) priority allow: one golden per section that reads the list (geo
+	// direct block, geo challenge, cloud provider block, bot filter). Geo is
+	// off in the cloud and bot cases so only that section reads it. The
+	// entries cover an exact IPv4, a /32, a host-bits CIDR, an IPv6 range,
 	// an upper-case IPv6 address, an IPv4-mapped address and a duplicate.
 	{
 		prio := []string{"203.0.113.5", "198.51.100.7/32", "192.0.2.77/24", "2001:db8::/32", "2001:DB8::10", "::ffff:198.51.100.9", "203.0.113.5"}

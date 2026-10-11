@@ -97,6 +97,7 @@ func filterSubscriptionStep(c *Container) nginx.DeferredStep {
 // Mirrors the original ordering in main.go. It returns the steps nginx could
 // not validate because it was not running, for applyWhenNginxUp.
 func runStartup(ctx context.Context, c *Container) ([]nginx.DeferredStep, error) {
+	service.WarnIPListMatchingChangeOnce(ctx, c.DB.DB)
 	if err := c.Nginx.EnsureFilterSubscriptionFiles(); err != nil {
 		log.Printf("[Startup] Warning: failed to ensure filter subscription files: %v", err)
 	}

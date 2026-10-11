@@ -289,14 +289,15 @@ func TestGeoWrites_RejectEntriesThatAreNotCodesOrAddresses(t *testing.T) {
 }
 
 // Any two letters are a country (XK is not on the picker's list, but the GeoIP
-// lookup gives it), saved in upper case; "--" is kept; entries are trimmed.
+// lookup gives it), saved in upper case; "--" is kept; entries are saved
+// normalized (model.NormalizeIPOrCIDR).
 func TestGeoWrites_SaveCountriesInUpperCase(t *testing.T) {
 	const hostID = "00000000-0000-0000-0000-000000000001"
 	db, mock := newMockDB(t)
 	dbw := &database.DB{DB: db}
 	h := NewGeoHandler(repository.NewGeoRepository(dbw), repository.NewGlobalGeoRepository(dbw), repository.NewProxyHostRepository(dbw), nil, nil)
 	body := `{"mode":"whitelist","countries":["KR","us"," xk ","--"],"allowed_ips":["192.0.2.10"," 198.51.100.0/24","2001:db8::/48","::ffff:192.0.2.0/120"]}`
-	const countries, allowed = `{"KR","US","XK","--"}`, `{"192.0.2.10","198.51.100.0/24","2001:db8::/48","::ffff:192.0.2.0/120"}`
+	const countries, allowed = `{"KR","US","XK","--"}`, `{"192.0.2.10","198.51.100.0/24","2001:db8::/48","192.0.2.0/24"}`
 
 	mock.ExpectQuery(`FROM global_geo_restrictions`).WillReturnError(sql.ErrNoRows)
 	mock.ExpectExec(`INSERT INTO global_geo_restrictions`).

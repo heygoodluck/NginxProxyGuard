@@ -107,7 +107,7 @@ func ParseIPWhitelist(raw string) (valid, invalid []string) {
 		if entry == "" {
 			continue
 		}
-		normalized, ok := normalizeIPOrCIDR(entry)
+		normalized, ok := NormalizeIPOrCIDR(entry)
 		if !ok {
 			invalid = append(invalid, entry)
 			continue
@@ -164,9 +164,14 @@ func ValidateFail2banRequest(req *CreateFail2banRequest) error {
 	return nil
 }
 
-// normalizeIPOrCIDR accepts a bare address or a prefix and returns the form
-// nginx wants, or ok=false for anything else.
-func normalizeIPOrCIDR(entry string) (string, bool) {
+// NormalizeIPOrCIDR accepts a bare address or a prefix and returns the form
+// nginx and ModSecurity match it as: a prefix as its network ("10.1.2.3/8" is
+// 10.0.0.0/8), an IPv6 address in its short lower-case form, and an
+// IPv4-mapped IPv6 address or range ("::ffff:192.0.2.1") as the IPv4 one
+// clients connect from. ok=false for anything else. Rate limit exceptions,
+// trusted proxies, priority allow and URI block exception entries all go
+// through it.
+func NormalizeIPOrCIDR(entry string) (string, bool) {
 	if strings.Contains(entry, "/") {
 		_, ipNet, err := net.ParseCIDR(entry)
 		if err != nil {

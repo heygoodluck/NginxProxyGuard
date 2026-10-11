@@ -140,7 +140,7 @@ func ParseTrustedProxyCIDRs(raw string) (valid, invalid []string) {
 		if entry == "" {
 			continue
 		}
-		normalized, ok := normalizeIPOrCIDR(entry)
+		normalized, ok := NormalizeIPOrCIDR(entry)
 		if !ok {
 			invalid = append(invalid, entry)
 			continue

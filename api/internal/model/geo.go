@@ -369,7 +369,7 @@ func NormalizeCountryCode(c string) (string, bool) {
 // ValidateGeoLists checks the countries and priority allow entries of a per
 // host geo restriction or of the global default, normalizing each entry (and
 // saving it normalized): a country with NormalizeCountryCode, an entry
-// trimmed. A nil slice is a field the request did not send.
+// with NormalizeIPOrCIDR. A nil slice is a field the request did not send.
 //
 // A country must be two letters (or "--"), and an entry an IP address or a
 // CIDR range.
@@ -382,10 +382,11 @@ func ValidateGeoLists(countries, allowedIPs []string) error {
 		countries[i] = code
 	}
 	for i := range allowedIPs {
-		allowedIPs[i] = strings.TrimSpace(allowedIPs[i])
-		if !IsIPOrCIDR(allowedIPs[i]) {
+		normalized, ok := NormalizeIPOrCIDR(strings.TrimSpace(allowedIPs[i]))
+		if !ok {
 			return fmt.Errorf("%w: allowed_ips[%d] %.60q is not an IP address or CIDR range", ErrInvalidInput, i, allowedIPs[i])
 		}
+		allowedIPs[i] = normalized
 	}
 	return nil
 }
@@ -404,8 +405,8 @@ func UsableGeoLists(countries, allowedIPs []string) (validCountries, validIPs, d
 	}
 	validIPs = allowedIPs[:0:0]
 	for _, ip := range allowedIPs {
-		if trimmed := strings.TrimSpace(ip); IsIPOrCIDR(trimmed) {
-			validIPs = append(validIPs, trimmed)
+		if normalized, ok := NormalizeIPOrCIDR(strings.TrimSpace(ip)); ok {
+			validIPs = append(validIPs, normalized)
 		} else {
 			dropped = append(dropped, ip)
 		}

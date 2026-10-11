@@ -615,11 +615,11 @@ func (m *Manager) GenerateConfigFull(ctx context.Context, data ProxyHostConfigDa
 	data.HTTPSPort = m.httpsPort
 	data.EnableIPv6 = m.enableIPv6
 
-	// Geo restriction entries are written into if conditions as they are,
-	// and rows saved before the API checked them can hold anything.
+	// Geo restriction entries are written into if conditions and a geo block
+	// as they are, and rows saved before the API checked them can hold anything.
 	data.GeoRestriction = renderableGeo(data.Host.ID, data.GeoRestriction)
-	// So are ban addresses, into the geo block, and URI block exception IPs,
-	// into if conditions. The API checks both, but a restore did not.
+	// So are ban addresses and URI block exception IPs, into geo blocks. The
+	// API checks both, but a restore did not.
 	data.BannedIPs = renderableBans(data.BannedIPs)
 	data.URIBlock = renderableURIBlock(data.Host.ID, data.URIBlock)
 
