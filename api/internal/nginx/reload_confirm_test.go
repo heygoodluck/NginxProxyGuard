@@ -187,6 +187,9 @@ func TestParseNginxProcsCountsOnlyTheMastersChildren(t *testing.T) {
 		"40 (sh) S 0 40 40 0 -1 4194560",
 		"41 (pgrep) R 40 40 40 0 -1 4194304",
 		"42 (odd (name) here) S 0 42 42 0 -1 4194304",
+		"43 (nginx) S 1 (x) S 0 43 43 0 -1 4194304", // its name is `nginx) S 1 (x`, and its parent 0
+		"50 (sleep) S 1 1 1 0 -1 4194304",           // orphaned in the container: nginx is PID 1
+		"63 (docker-entrypoi) S 1 1 1 0 -1 4194368", // the entrypoint's background loop
 	}, "\n") + "\n"
 	master, children, err := parseNginxProcs(out)
 	if err != nil {
@@ -194,6 +197,11 @@ func TestParseNginxProcsCountsOnlyTheMastersChildren(t *testing.T) {
 	}
 	if master != 1 {
 		t.Fatalf("master = %d, want 1", master)
+	}
+	for _, pid := range []int{43, 50, 63} {
+		if children[pid] {
+			t.Errorf("counted %d, which is not an nginx process, as the master's child", pid)
+		}
 	}
 	if len(children) != 3 || !children[10] || !children[11] || !children[12] {
 		t.Fatalf("children = %v, want 10, 11 and 12 only", children)
@@ -210,6 +218,36 @@ func TestCleanEmergLine(t *testing.T) {
 	got := cleanEmergLine(`2026/10/11 09:00:00 [emerg] 1#1: bind() to 0.0.0.0:18998 failed (98: Address in use)`)
 	if got != `bind() to 0.0.0.0:18998 failed (98: Address in use)` {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestEmergLinesReadsPastLinesOverOneMegabyte(t *testing.T) {
+	audit := `{"transaction":{"client_ip":"192.0.2.10","request":{"uri":"/` + strings.Repeat("a", 1<<20+10) + `"}}}`
+	got, err := emergLines(strings.NewReader(audit + "\n" + rejectedZoneKeyLine + "\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != rejectedZoneKeyLine {
+		t.Fatalf("got %d lines (%.200q), want the [emerg] line after the long one", len(got), strings.Join(got, "\n"))
+	}
+}
+
+func TestEmergLinesKeepsOnlyNginxsOwnEmergLines(t *testing.T) {
+	// The container's log also carries the access log and ModSecurity's audit
+	// log, whose lines can hold any text in any field.
+	in := strings.Join([]string{
+		`192.0.2.10 - - [11/Oct/2026:09:00:00 +0000] "app.example.com" "GET /[emerg] HTTP/1.1" 404 5 "-" "[emerg]" "-"`,
+		`192.0.2.10 - [emerg] 1#1: x [11/Oct/2026:09:00:00 +0000] "app.example.com" "GET / HTTP/1.1" 401 5 "-" "-" "-"`,
+		`{"transaction":{"client_ip":"192.0.2.10","messages":[{"message":"[emerg]"}]}}`,
+		`2026/10/11 09:00:00 [error] 30#30: *5 open() "/x/[emerg]" failed (2: No such file or directory)`,
+		rejectedZoneKeyLine,
+	}, "\n") + "\n"
+	got, err := emergLines(strings.NewReader(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != rejectedZoneKeyLine {
+		t.Fatalf("got %q, want only nginx's [emerg] line", got)
 	}
 }
 

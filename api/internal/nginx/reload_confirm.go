@@ -1,9 +1,11 @@
 package nginx
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os/exec"
 	"regexp"
@@ -68,10 +70,12 @@ type dockerReloadProbe struct {
 
 // nginxProcsScript prints the master's pid, then the /proc/<pid>/stat line of
 // every process in the container. The fourth field of a stat line is the
-// process's parent, so the master's children are found without matching any
-// process name: the docker exec running this, the pgrep upForDeferredSteps
+// process's parent, so the master's children are found without reading any
+// command line: the docker exec running this, the pgrep upForDeferredSteps
 // runs and an operator's shell are not the master's children, whatever their
-// command lines say.
+// command lines say. The second field is the process's name, the name of the
+// program it runs: "nginx" for the workers and the cache manager and loader,
+// whose command lines nginx rewrites but whose name it leaves alone.
 const nginxProcsScript = "cat /var/run/nginx.pid && cat /proc/[0-9]*/stat 2>/dev/null; true"
 
 func (p *dockerReloadProbe) Children(ctx context.Context) (int, map[int]bool, error) {
@@ -82,7 +86,11 @@ func (p *dockerReloadProbe) Children(ctx context.Context) (int, map[int]bool, er
 	return parseNginxProcs(out)
 }
 
-// parseNginxProcs reads nginxProcsScript's output.
+// parseNginxProcs reads nginxProcsScript's output: the master's pid and the
+// pids of its children named nginx. Only the name tells them apart: nginx is
+// PID 1 in the nginx image, so the entrypoint's background loops are the
+// master's children from the start, and a process orphaned in the container
+// becomes one.
 func parseNginxProcs(out string) (int, map[int]bool, error) {
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	master, err := strconv.Atoi(strings.TrimSpace(lines[0]))
@@ -92,17 +100,18 @@ func parseNginxProcs(out string) (int, map[int]bool, error) {
 	children := make(map[int]bool)
 	for _, line := range lines[1:] {
 		// "<pid> (<name>) <state> <ppid> ...": the name may hold spaces and
-		// parentheses, so the fields after it are counted from the last ")".
+		// parentheses, so it runs from the first "(" to the last ")", and the
+		// fields after it are counted from there.
+		open := strings.IndexByte(line, '(')
 		end := strings.LastIndexByte(line, ')')
-		if end < 0 {
+		if open < 0 || end < open || line[open+1:end] != "nginx" {
 			continue
 		}
-		head := strings.Fields(line[:end])
 		tail := strings.Fields(line[end+1:])
-		if len(head) == 0 || len(tail) < 2 {
+		if len(tail) < 2 {
 			continue
 		}
-		pid, pidErr := strconv.Atoi(head[0])
+		pid, pidErr := strconv.Atoi(strings.TrimSpace(line[:open]))
 		ppid, ppidErr := strconv.Atoi(tail[1])
 		if pidErr != nil || ppidErr != nil {
 			continue
@@ -118,24 +127,61 @@ func (p *dockerReloadProbe) EmergSince(ctx context.Context, since time.Time) ([]
 	ctx, cancel := context.WithTimeout(ctx, dockerExecTimeout)
 	defer cancel()
 	// nginx writes its error log to stderr (nginx/scripts/docker-entrypoint.sh),
-	// which docker keeps as the container's log.
-	cmd := exec.CommandContext(ctx, "docker", "logs", "--since", since.UTC().Format(time.RFC3339Nano), "--tail", "200", p.containerName)
-	out, err := cmd.CombinedOutput()
+	// which docker keeps as the container's log. That log is busy: the access
+	// log and ModSecurity's audit log go to stdout, and an audit line can run to
+	// about 1MB. With --since alone, docker reads the log files from their start
+	// to find the lines after since. --tail bounds that: docker reads at most
+	// 5000 lines back from the end and keeps those after since, and the check a
+	// second after the signal needs only that second's lines.
+	cmd := exec.CommandContext(ctx, "docker", "logs", "--since", since.UTC().Format(time.RFC3339Nano), "--tail", "5000", p.containerName)
+	out, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("docker logs: %w", err)
 	}
-	var lines []string
-	for _, line := range strings.Split(string(out), "\n") {
-		if strings.Contains(line, "[emerg]") {
-			lines = append(lines, line)
-		}
+	cmd.Stderr = cmd.Stdout // the container's stderr comes out on docker's
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("docker logs: %w", err)
+	}
+	lines, readErr := emergLines(out)
+	if err := cmd.Wait(); err != nil {
+		return nil, fmt.Errorf("docker logs: %w", err)
+	}
+	if readErr != nil {
+		return nil, fmt.Errorf("docker logs: %w", readErr)
 	}
 	return lines, nil
 }
 
-// emergPrefix is what nginx puts before the message of a log line:
-// "2026/10/11 09:00:00 [emerg] 1#1: ".
-var emergPrefix = regexp.MustCompile(`^\S+ \S+ \[emerg\] \d+#\d+: (?:\*\d+ )?`)
+// emergLines returns the lines in r, docker logs' output for the nginx
+// container, that nginx's error log wrote at the emerg level. The same output
+// carries the access log and ModSecurity's audit log, whose lines can hold any
+// text and run to about 1MB. So a line counts only when it starts with
+// emergPrefix, and lines of any length are read past (a bufio.Scanner stops at
+// the first line longer than its buffer). An nginx log line is at most 2KB
+// (NGX_MAX_ERROR_STR), so only the first piece of each line is looked at.
+func emergLines(r io.Reader) ([]string, error) {
+	br := bufio.NewReader(r)
+	var lines []string
+	atStart := true // the next piece ReadLine returns begins a line
+	for {
+		piece, more, err := br.ReadLine()
+		if err == io.EOF {
+			return lines, nil
+		}
+		if err != nil {
+			return lines, err
+		}
+		if atStart && emergPrefix.Match(piece) {
+			lines = append(lines, string(piece))
+		}
+		atStart = !more
+	}
+}
+
+// emergPrefix is what nginx's error log puts before the message of an emerg
+// line: "2026/10/11 09:00:00 [emerg] 1#1: ". emergLines keeps the lines that
+// start with it, and cleanEmergLine cuts it off.
+var emergPrefix = regexp.MustCompile(`^\d{4}/\d\d/\d\d \d\d:\d\d:\d\d \[emerg\] \d+#\d+: (?:\*\d+ )?`)
 
 // cleanEmergLine returns line without its timestamp and pid, cut to 300 bytes.
 func cleanEmergLine(line string) string {
