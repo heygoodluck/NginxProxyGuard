@@ -1013,6 +1013,31 @@ func goldenCases() []goldenCase {
 				CustomBlockedAgents: "BadBot", CreatedAt: fixtureNow, UpdatedAt: fixtureNow}}})
 	}
 
+	// 22) uri_block_exception_forwardauth — a URI block exception lifts the
+	// block, not the host's login: the pass-through location runs the same
+	// ForwardAuth gate as location /, and keeps the server's error pages.
+	{
+		host := goldenBaseHost("00000000-0000-0000-0000-000000000a16", "uri-auth.example.com")
+		apID := "00000000-0000-0000-0000-0000000000f8"
+		host.AuthProviderID = &apID
+		cases = append(cases, goldenCase{
+			name: "uri_block_exception_forwardauth",
+			data: ProxyHostConfigData{
+				Host:           host,
+				GlobalSettings: baseGlobalSettings(),
+				AuthProvider: &model.AuthProvider{ID: apID, Name: "authelia", Type: "authelia",
+					ProviderURL: "http://127.0.0.1:9091", TimeoutMs: 5000, Enabled: true, CreatedAt: fixtureNow, UpdatedAt: fixtureNow},
+				URIBlock: &model.URIBlock{
+					ID: "00000000-0000-0000-0000-0000000000ab", ProxyHostID: host.ID, Enabled: true,
+					Rules: []model.URIBlockRule{{ID: "00000000-0000-0000-0000-0000000000bc", Pattern: "/admin",
+						MatchType: model.URIMatchPrefix, Description: "block admin", Enabled: true}},
+					ExceptionIPs: []string{"192.0.2.20"},
+					CreatedAt:    fixtureNow, UpdatedAt: fixtureNow,
+				},
+			},
+		})
+	}
+
 	return cases
 }
 

@@ -636,7 +636,11 @@
             return 403;
         }
         # Pass through to upstream if exception matched
-        {{if and $.Upstream $.Upstream.Servers}}proxy_pass {{upstreamScheme $.Upstream}}://{{$.Upstream.Name}};{{if eq (upstreamScheme $.Upstream) "https"}}
+{{if $.AuthProvider}}        # An exception lifts the URI block, not the host's login: the same
+        # gate as location /. Its error_page replaces the server's, which
+        # are repeated after it.
+        {{template "_auth_gate" $}}{{template "_challenge_server_error_pages" $}}
+{{end}}        {{if and $.Upstream $.Upstream.Servers}}proxy_pass {{upstreamScheme $.Upstream}}://{{$.Upstream.Name}};{{if eq (upstreamScheme $.Upstream) "https"}}
         proxy_ssl_server_name on;
         proxy_ssl_name $host;
         proxy_ssl_verify off;{{end}}{{else}}proxy_pass {{$.Host.ForwardScheme}}://npg_direct_{{sanitizeID $.Host.ID}};
