@@ -33,7 +33,9 @@ func isTransientReloadError(err error) bool {
 
 // testAndReloadNginxWithRetry runs testAndReloadNginx with exponential backoff
 // retry for transient errors. Non-transient errors return immediately so the
-// caller can roll back user-visible changes.
+// caller can roll back user-visible changes, except a reload nginx refused
+// (ErrReloadRejected), which also returns at once but whose files the caller
+// keeps.
 //
 // Must be called within executeWithLock (same contract as testAndReloadNginx).
 func (m *Manager) testAndReloadNginxWithRetry(ctx context.Context) error {

@@ -38,7 +38,7 @@ func TestInternalErrorAnswersARejectedReloadWith409(t *testing.T) {
 	if !strings.Contains(body.Details, "Address in use") {
 		t.Errorf("details = %q, want nginx's line", body.Details)
 	}
-	if !strings.Contains(body.Error, "free that port") {
+	if !strings.Contains(body.Error, "do not restart it: free the port") {
 		t.Errorf("error = %q, want the port hint", body.Error)
 	}
 }

@@ -103,7 +103,9 @@ func (m *Manager) hostRenderPaths(r HostConfigRender) []string {
 // SINGLE global lock acquisition: snapshot all affected files → write all
 // configs → nginx -t (+ reload when reload=true) → on any failure restore the
 // snapshot and re-test/reload so nginx keeps running the last-known-good
-// state. This is the required path for every multi-host fan-out (certificate,
+// state. A reload nginx refused after nginx -t passed is the exception: the
+// written files stay and the error is returned (see ErrReloadRejected).
+// This is the required path for every multi-host fan-out (certificate,
 // cloud provider, exploit rules, access list) and for single-host updates that
 // defer the reload to the debounced reloader (reload=false): without it, a
 // failed nginx -t leaves invalid files on disk that wedge every subsequent

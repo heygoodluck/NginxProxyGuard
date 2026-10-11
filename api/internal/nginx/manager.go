@@ -457,7 +457,7 @@ func (m *Manager) RemoveConfigAndReload(ctx context.Context, host *model.ProxyHo
 		// Test and reload nginx
 		if err := m.testAndReloadNginxWithRetry(ctx); err != nil {
 			if errors.Is(err, ErrReloadRejected) {
-				return err // nginx -t accepted these files: keep them (ErrReloadRejected)
+				return err // nginx -t accepted the files without this host's: keep it that way (ErrReloadRejected)
 			}
 			// After restoring backups, re-apply the previous-good config so nginx
 			// is guaranteed to be running the rolled-back state rather than any

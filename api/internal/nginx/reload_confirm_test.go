@@ -1,12 +1,26 @@
 package nginx
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
 )
+
+// captureLog sends the standard logger's output to a buffer for the rest of
+// the test.
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(prev) })
+	return &buf
+}
 
 // fakeProcs is one answer of fakeReloadProbe.Children.
 type fakeProcs struct {
@@ -109,6 +123,105 @@ func TestReloadRejectedWhenNginxKeepsItsWorkersAndLogsEmerg(t *testing.T) {
 	want := `limit_req "rate_x" uses the "$rate_final_key_x" key while previously it used the "$rate_limit_key_x" key`
 	if rejected.Detail != want {
 		t.Errorf("Detail = %q, want %q", rejected.Detail, want)
+	}
+}
+
+// For a port in use nginx logs the bind() failure, which names the address
+// and port, at each of its retries, and at the end "still could not bind()",
+// which names neither. The first line is the one that says what to free.
+func TestReloadRejectedDetailIsTheFirstEmergLine(t *testing.T) {
+	const bindLine = `bind() to 0.0.0.0:18998 failed (98: Address in use)`
+	probe := &fakeReloadProbe{
+		procs: []fakeProcs{{master: 1, children: []int{10}}},
+		emerg: []string{
+			`2026/10/11 09:00:00 [emerg] 1#1: ` + bindLine,
+			`2026/10/11 09:00:01 [emerg] 1#1: ` + bindLine,
+			`2026/10/11 09:00:02 [emerg] 1#1: still could not bind()`,
+		},
+	}
+	err := newConfirmManager(&fakeNginxCLI{}, probe).reloadNginxInternal(context.Background())
+	var rejected *ReloadRejectedError
+	if !errors.As(err, &rejected) {
+		t.Fatalf("err = %v, want *ReloadRejectedError", err)
+	}
+	if rejected.Detail != bindLine {
+		t.Errorf("Detail = %q, want the first [emerg] line %q", rejected.Detail, bindLine)
+	}
+}
+
+// The refusal is an error in the container's log, which the system log reads
+// by its level marker.
+func TestReloadRefusalIsLoggedAsAnError(t *testing.T) {
+	logs := captureLog(t)
+	probe := &fakeReloadProbe{
+		procs: []fakeProcs{{master: 1, children: []int{10}}},
+		emerg: []string{rejectedZoneKeyLine},
+	}
+	if err := newConfirmManager(&fakeNginxCLI{}, probe).reloadNginxInternal(context.Background()); !errors.Is(err, ErrReloadRejected) {
+		t.Fatalf("err = %v, want ErrReloadRejected", err)
+	}
+	if !strings.Contains(logs.String(), "[ERROR] [NginxReload] nginx refused the reload") {
+		t.Errorf("the refusal is not logged as an error:\n%s", logs)
+	}
+}
+
+// When nginx's log could not be read, the warning must not say that nginx
+// logged no error: it says why it does not know.
+func TestReloadUnconfirmedWarningNamesTheFailedRead(t *testing.T) {
+	logs := captureLog(t)
+	probe := &fakeReloadProbe{
+		procs:    []fakeProcs{{master: 1, children: []int{10}}},
+		emergErr: errors.New("docker logs: Cannot connect to the Docker daemon"),
+	}
+	if err := newConfirmManager(&fakeNginxCLI{}, probe).reloadNginxInternal(context.Background()); err != nil {
+		t.Fatalf("an unconfirmed reload must not fail the save: %v", err)
+	}
+	out := logs.String()
+	if !strings.Contains(out, "Cannot connect to the Docker daemon") {
+		t.Errorf("the warning does not name the failed read:\n%s", out)
+	}
+	if strings.Contains(out, "logged no error") {
+		t.Errorf("the warning claims nginx logged no error although its log was not read:\n%s", out)
+	}
+}
+
+// When the log was read and nginx's processes were not, the warning says
+// which read failed.
+func TestReloadUnconfirmedWarningNamesTheFailedProcessRead(t *testing.T) {
+	logs := captureLog(t)
+	probe := &fakeReloadProbe{procs: []fakeProcs{
+		{master: 1, children: []int{10}}, // before the signal
+		{err: errors.New("docker exec: i/o timeout")},
+	}}
+	if err := newConfirmManager(&fakeNginxCLI{}, probe).reloadNginxInternal(context.Background()); err != nil {
+		t.Fatalf("an unconfirmed reload must not fail the save: %v", err)
+	}
+	if out := logs.String(); !strings.Contains(out, "its processes could not be read (docker exec: i/o timeout)") {
+		t.Errorf("the warning does not name the failed process read:\n%s", out)
+	}
+}
+
+// docker logs writes the container's stdout, which carries the access log and
+// ModSecurity's audit log, to its own stdout, and the container's stderr,
+// nginx's error log, to its stderr. Only the error log holds [emerg] lines.
+func TestEmergSinceReadsOnlyNginxsErrorLog(t *testing.T) {
+	const onStdout = `2026/10/11 09:00:00 [emerg] 1#1: a line on stdout`
+	const onStderr = `2026/10/11 09:00:00 [emerg] 1#1: bind() to 0.0.0.0:18998 failed (98: Address in use)`
+	var gotArgs []string
+	p := &dockerReloadProbe{containerName: "npg-proxy", command: func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		gotArgs = append([]string{name}, args...)
+		return exec.CommandContext(ctx, "sh", "-c", `printf '%s\n' "$1"; printf '%s\n' "$2" >&2`, "sh", onStdout, onStderr)
+	}}
+	lines, err := p.EmergSince(context.Background(), time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 1 || lines[0] != onStderr {
+		t.Fatalf("lines = %q, want only the stderr line", lines)
+	}
+	want := []string{"docker", "logs", "--since", "2026-10-11T09:00:00Z", "--tail", "5000", "npg-proxy"}
+	if strings.Join(gotArgs, " ") != strings.Join(want, " ") {
+		t.Errorf("command = %q, want %q", gotArgs, want)
 	}
 }
 
@@ -248,6 +361,22 @@ func TestEmergLinesKeepsOnlyNginxsOwnEmergLines(t *testing.T) {
 	}
 	if len(got) != 1 || got[0] != rejectedZoneKeyLine {
 		t.Fatalf("got %q, want only nginx's [emerg] line", got)
+	}
+}
+
+// The kept file listens on a port another program holds, so nginx cannot
+// start again until the port is free or the file is gone. nginx runs on the
+// host network and restarts by itself, so a restart then takes every site
+// down: the message says not to restart.
+func TestReloadRejectedErrorWarnsAgainstARestartWhenAPortIsTaken(t *testing.T) {
+	msg := (&ReloadRejectedError{Detail: `bind() to 0.0.0.0:18998 failed (98: Address in use)`}).Error()
+	for _, want := range []string{"cannot start again", "do not restart", "free the port", "change or delete the host"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("Error() = %q, want it to contain %q", msg, want)
+		}
+	}
+	if strings.Contains(msg, "restart the nginx container") {
+		t.Errorf("Error() = %q advises a restart for a port in use", msg)
 	}
 }
 

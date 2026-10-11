@@ -175,8 +175,7 @@ func (r *NginxReloader) scheduleRetryOrGiveUp(reloadErr error) {
 	}
 	r.retryCount = 0
 	r.mu.Unlock()
-	log.Printf("[NginxReloader] Reload failed after %d attempts, giving up — nginx keeps running its previous config; pending changes (e.g. IP bans) are NOT applied. Check the nginx container, then save any host or security setting to retry: %v",
-		attempt, reloadErr)
+	log.Print(giveUpLogLine(attempt, reloadErr))
 	r.logGiveUp(attempt, reloadErr)
 
 	// Edge-triggered (#221). Only one subject exists — nginx itself — so a
@@ -210,19 +209,47 @@ func (r *NginxReloader) logGiveUp(attempts int, reloadErr error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	details, _ := json.Marshal(map[string]string{
-		"attempts": fmt.Sprintf("%d", attempts),
-		"error":    reloadErr.Error(),
-	})
+	message, fields := giveUpEntry(attempts, reloadErr)
+	details, _ := json.Marshal(fields)
 	if err := r.systemLogRepo.Create(ctx, &repository.SystemLog{
 		Source:    repository.SourceInternal,
 		Level:     repository.LevelError,
-		Message:   fmt.Sprintf("Nginx reload failed after %d attempts — queued changes (e.g. IP bans, URI blocks) are not applied: %s", attempts, reloadErr.Error()),
+		Message:   message,
 		Details:   details,
 		Component: "nginx_reloader",
 	}); err != nil {
 		log.Printf("[NginxReloader] Failed to write system log entry: %v", err)
 	}
+}
+
+// giveUpLogLine is the container log line for a debounced reload given up
+// after attempts tries. nginx refuses a reload it refused (ErrReloadRejected)
+// again until the cause is dealt with, so another save does not help; the
+// error's own text says what to do.
+func giveUpLogLine(attempts int, reloadErr error) string {
+	if errors.Is(reloadErr, nginx.ErrReloadRejected) {
+		return fmt.Sprintf("[ERROR] [NginxReloader] nginx refused the configuration and keeps running its previous one; pending changes (e.g. IP bans) are NOT applied: %v", reloadErr)
+	}
+	return fmt.Sprintf("[NginxReloader] Reload failed after %d attempts, giving up — nginx keeps running its previous config; pending changes (e.g. IP bans) are NOT applied. Check the nginx container, then save any host or security setting to retry: %v",
+		attempts, reloadErr)
+}
+
+// giveUpEntry is the message and details of the system log entry for a
+// debounced reload given up after attempts tries. For a reload nginx refused,
+// the details carry nginx's own line as "detail".
+func giveUpEntry(attempts int, reloadErr error) (string, map[string]string) {
+	details := map[string]string{
+		"attempts": fmt.Sprintf("%d", attempts),
+		"error":    reloadErr.Error(),
+	}
+	if errors.Is(reloadErr, nginx.ErrReloadRejected) {
+		var rejected *nginx.ReloadRejectedError
+		if errors.As(reloadErr, &rejected) && rejected.Detail != "" {
+			details["detail"] = rejected.Detail
+		}
+		return fmt.Sprintf("Nginx refused the configuration and keeps running its previous one — queued changes (e.g. IP bans, URI blocks) are not applied: %s", reloadErr.Error()), details
+	}
+	return fmt.Sprintf("Nginx reload failed after %d attempts — queued changes (e.g. IP bans, URI blocks) are not applied: %s", attempts, reloadErr.Error()), details
 }
 
 // IsPending returns whether a reload is pending

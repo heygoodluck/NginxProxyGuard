@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -153,5 +154,40 @@ func TestDebouncedReloadDoesNotRetryARejectedReload(t *testing.T) {
 	}
 	if r.IsPending() {
 		t.Fatal("no retry may be pending after a refused reload")
+	}
+}
+
+// A reload nginx refused is not retried, and saving a host again does not
+// help: nginx refuses it again until the cause is dealt with. The give-up
+// text says that nginx refused the configuration and keeps the error's own
+// hint, instead of advising another save.
+func TestGiveUpTextForARefusedReload(t *testing.T) {
+	err := fmt.Errorf("apply: %w", &nginx.ReloadRejectedError{Detail: "bind() to 0.0.0.0:18998 failed (98: Address in use)"})
+	line := giveUpLogLine(1, err)
+	if strings.Contains(line, "save any host") {
+		t.Errorf("log line advises saving again for a refused reload: %q", line)
+	}
+	for _, want := range []string{"[ERROR]", "nginx refused the configuration", "do not restart it"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("log line %q does not contain %q", line, want)
+		}
+	}
+	message, details := giveUpEntry(1, err)
+	if strings.Contains(message, "after 1 attempts") || !strings.Contains(message, "refused the configuration") {
+		t.Errorf("system log message = %q, want it to say nginx refused the configuration", message)
+	}
+	if details["detail"] != "bind() to 0.0.0.0:18998 failed (98: Address in use)" {
+		t.Errorf("details = %v, want nginx's line under detail", details)
+	}
+}
+
+// Other failures keep their text: those are worth another try.
+func TestGiveUpTextForOtherFailures(t *testing.T) {
+	err := errors.New("nginx -t failed")
+	if line := giveUpLogLine(6, err); !strings.Contains(line, "after 6 attempts") || !strings.Contains(line, "save any host or security setting to retry") {
+		t.Errorf("log line = %q", line)
+	}
+	if message, details := giveUpEntry(6, err); !strings.Contains(message, "after 6 attempts") || details["detail"] != "" {
+		t.Errorf("system log entry = %q %v", message, details)
 	}
 }

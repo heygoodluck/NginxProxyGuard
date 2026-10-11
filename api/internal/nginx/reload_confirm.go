@@ -42,7 +42,10 @@ func (e *ReloadRejectedError) Error() string {
 	const saved = "the change is saved, but the running nginx refused to load it and keeps its previous configuration"
 	switch {
 	case strings.Contains(e.Detail, "bind()"):
-		return saved + "; a port it is to listen on is in use, so free that port or change the setting"
+		// The kept file listens on the port, so nginx, which runs on the
+		// host network and restarts by itself, cannot start again while
+		// another program holds it: a restart would take every site down.
+		return saved + "; a port it is to listen on is in use, and nginx cannot start again while that port is taken, so do not restart it: free the port, or change or delete the host that listens on it"
 	case strings.Contains(e.Detail, "shared memory zone"), strings.Contains(e.Detail, "previously it used"):
 		return saved + "; restart the nginx container to apply it"
 	}
@@ -66,6 +69,9 @@ type reloadProbe interface {
 type dockerReloadProbe struct {
 	containerName string
 	exec          healthExecutor // docker exec <container> ...
+	// command builds the docker logs command; nil is exec.CommandContext.
+	// Tests substitute one that prints what docker logs would.
+	command func(ctx context.Context, name string, args ...string) *exec.Cmd
 }
 
 // nginxProcsScript prints the master's pid, then the /proc/<pid>/stat line of
@@ -127,18 +133,25 @@ func (p *dockerReloadProbe) EmergSince(ctx context.Context, since time.Time) ([]
 	ctx, cancel := context.WithTimeout(ctx, dockerExecTimeout)
 	defer cancel()
 	// nginx writes its error log to stderr (nginx/scripts/docker-entrypoint.sh),
-	// which docker keeps as the container's log. That log is busy: the access
-	// log and ModSecurity's audit log go to stdout, and an audit line can run to
-	// about 1MB. With --since alone, docker reads the log files from their start
-	// to find the lines after since. --tail bounds that: docker reads at most
-	// 5000 lines back from the end and keeps those after since, and the check a
-	// second after the signal needs only that second's lines.
-	cmd := exec.CommandContext(ctx, "docker", "logs", "--since", since.UTC().Format(time.RFC3339Nano), "--tail", "5000", p.containerName)
-	out, err := cmd.StdoutPipe()
+	// which docker keeps as the container's log, and docker logs prints the
+	// container's stderr on its own stderr. Only that is read. The container's
+	// stdout is busy: the access log and ModSecurity's audit log go there, and
+	// an audit line can run to about 1MB, so docker logs' stdout goes to the
+	// null device (Stdout nil). With --since alone, docker reads the log files
+	// from their start to find the lines after since. --tail bounds that:
+	// docker reads at most 5000 lines back from the end and keeps those after
+	// since, and the check a second after the signal needs only that second's
+	// lines.
+	command := p.command
+	if command == nil {
+		command = exec.CommandContext
+	}
+	cmd := command(ctx, "docker", "logs", "--since", since.UTC().Format(time.RFC3339Nano), "--tail", "5000", p.containerName)
+	cmd.Stdout = nil
+	out, err := cmd.StderrPipe()
 	if err != nil {
 		return nil, fmt.Errorf("docker logs: %w", err)
 	}
-	cmd.Stderr = cmd.Stdout // the container's stderr comes out on docker's
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("docker logs: %w", err)
 	}
@@ -152,13 +165,15 @@ func (p *dockerReloadProbe) EmergSince(ctx context.Context, since time.Time) ([]
 	return lines, nil
 }
 
-// emergLines returns the lines in r, docker logs' output for the nginx
-// container, that nginx's error log wrote at the emerg level. The same output
-// carries the access log and ModSecurity's audit log, whose lines can hold any
-// text and run to about 1MB. So a line counts only when it starts with
-// emergPrefix, and lines of any length are read past (a bufio.Scanner stops at
-// the first line longer than its buffer). An nginx log line is at most 2KB
-// (NGX_MAX_ERROR_STR), so only the first piece of each line is looked at.
+// emergLines returns the lines in r, the nginx container's stderr as docker
+// logs prints it, that nginx's error log wrote at the emerg level. Whatever
+// else the container writes there can hold any text, at any length, and the
+// access log and ModSecurity's audit log, whose lines run to about 1MB, would
+// be there too if they were ever sent to stderr. So a line counts only when it
+// starts with emergPrefix, and lines of any length are read past (a
+// bufio.Scanner stops at the first line longer than its buffer). An nginx log
+// line is at most 2KB (NGX_MAX_ERROR_STR), so only the first piece of each
+// line is looked at.
 func emergLines(r io.Reader) ([]string, error) {
 	br := bufio.NewReader(r)
 	var lines []string
@@ -228,8 +243,15 @@ func (m *Manager) confirmReload(ctx context.Context, before reloadSnapshot, sent
 		metrics.NginxReloadConfirmTotal.WithLabelValues(result).Inc()
 		metrics.NginxReloadConfirmSeconds.Observe(time.Since(start).Seconds())
 	}
+	// The last failed reads of nginx's processes and of its log. Each log
+	// read covers everything since the signal, so one that works clears
+	// logErr.
+	var procErr, logErr error
 	for {
-		if master, children, err := m.reloadProbe.Children(ctx); err == nil {
+		master, children, err := m.reloadProbe.Children(ctx)
+		if err != nil {
+			procErr = err
+		} else {
 			if master != before.master {
 				done("accepted") // a new master read the files on disk
 				return nil
@@ -248,16 +270,34 @@ func (m *Manager) confirmReload(ctx context.Context, before reloadSnapshot, sent
 			readLog = true
 		}
 		if readLog {
-			if lines, err := m.reloadProbe.EmergSince(ctx, sentAt); err == nil && len(lines) > 0 {
+			// Any [emerg] line since the signal counts against this reload.
+			// For a port in use nginx retries bind() five times, 500ms apart,
+			// so a reload signalled within about 2.5s of one it refused that
+			// way can see the earlier one's lines and be reported as refused
+			// too. Either way its files are kept, and the next reload that
+			// nginx takes applies them.
+			lines, err := m.reloadProbe.EmergSince(ctx, sentAt)
+			logErr = err
+			if err == nil && len(lines) > 0 {
 				done("rejected")
-				detail := cleanEmergLine(lines[len(lines)-1])
-				log.Printf("[NginxReload] nginx refused the reload and keeps its previous configuration: %s", detail)
+				// The first line names the cause: for a port in use, the
+				// bind() line with the address, where the last one is
+				// "still could not bind()".
+				detail := cleanEmergLine(lines[0])
+				log.Printf("[ERROR] [NginxReload] nginx refused the reload and keeps its previous configuration: %s", detail)
 				return &ReloadRejectedError{Detail: detail}
 			}
 		}
 		if last {
 			done("unconfirmed")
-			log.Printf("[WARN] [NginxReload] nginx started no new worker within %v of the reload and logged no error; the reload is reported as applied", wait)
+			switch {
+			case logErr != nil:
+				log.Printf("[WARN] [NginxReload] nginx started no new worker within %v of the reload, and its log could not be read (%v); the reload is reported as applied", wait, logErr)
+			case procErr != nil:
+				log.Printf("[WARN] [NginxReload] nginx logged no error for the reload, and its processes could not be read (%v) to see whether it started new workers within %v; the reload is reported as applied", procErr, wait)
+			default:
+				log.Printf("[WARN] [NginxReload] nginx started no new worker within %v of the reload and logged no error; the reload is reported as applied", wait)
+			}
 			return nil
 		}
 		select {
