@@ -282,8 +282,11 @@ func (h *SettingsHandler) performRestore(ctx context.Context, backup *model.Back
 			}
 		}
 
-		// Test nginx config before reload
-		if err := h.nginxManager.TestConfig(ctx); err != nil {
+		// Test nginx config before reload. A failing test is tried once more
+		// with nginx.conf rendered from the restored settings
+		// (testRestoredConfig).
+		mainRendered, err := testRestoredConfig(ctx, h.nginxManager.TestConfig, h.settingsService.RegenerateMainNginxConfig)
+		if err != nil {
 			log.Printf("[Backup] ERROR: nginx config test failed: %v", err)
 			result.NginxConfigValid = false
 			result.NginxConfigError = err.Error()
@@ -300,7 +303,7 @@ func (h *SettingsHandler) performRestore(ctx context.Context, backup *model.Back
 			}
 
 			// Test again after removing failed configs
-			if err := h.nginxManager.TestConfig(ctx); err != nil {
+			if mainRendered, err = testRestoredConfig(ctx, h.nginxManager.TestConfig, h.settingsService.RegenerateMainNginxConfig); err != nil {
 				log.Printf("[Backup] ERROR: nginx config test still failing after cleanup: %v", err)
 				log.Printf("[Backup] nginx reload skipped to prevent container issues")
 				result.NginxConfigValid = false
@@ -323,9 +326,12 @@ func (h *SettingsHandler) performRestore(ctx context.Context, backup *model.Back
 		// bad render it rolls nginx.conf back to the last-good copy and logs.
 		// (Note: ModSecurity rule changes additionally need a proxy restart to
 		// take effect — this still fixes the file/DB divergence and the #130
-		// rate-limit zones, which do apply on reload.)
-		if err := h.settingsService.RegenerateMainNginxConfig(ctx); err != nil {
-			log.Printf("[Backup] Warning: failed to regenerate main nginx.conf after restore: %v", err)
+		// rate-limit zones, which do apply on reload.) Skipped when the test
+		// above already rendered it.
+		if !mainRendered {
+			if err := h.settingsService.RegenerateMainNginxConfig(ctx); err != nil {
+				log.Printf("[Backup] Warning: failed to regenerate main nginx.conf after restore: %v", err)
+			}
 		}
 
 		// Reload nginx only if config test passes

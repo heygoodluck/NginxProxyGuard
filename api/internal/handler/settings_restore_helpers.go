@@ -16,6 +16,25 @@ import (
 	"nginx-proxy-guard/internal/model"
 )
 
+// testRestoredConfig runs nginx -t on the restored tree (test). The host
+// configs are rendered before nginx.conf, and a restored host's Advanced
+// Config can use a global rate limit zone by its old name, which only an
+// nginx.conf rendered from the restored settings defines (as an alias). So
+// when the test fails, nginx.conf is rendered (renderMain, whose own nginx -t
+// covers the whole tree and which keeps the previous nginx.conf when that
+// fails), and the test passes if that render's does. It reports whether
+// nginx.conf was rendered, and otherwise returns the test's error.
+func testRestoredConfig(ctx context.Context, test, renderMain func(context.Context) error) (bool, error) {
+	err := test(ctx)
+	if err == nil {
+		return false, nil
+	}
+	if renderMain(ctx) == nil {
+		return true, nil
+	}
+	return false, err
+}
+
 // safeJoinUnderBase joins relPath onto base and verifies the result stays
 // within base, blocking path-traversal entries (e.g. "../conf.d/evil.conf")
 // in untrusted backup archives. Returns the cleaned destination path or an

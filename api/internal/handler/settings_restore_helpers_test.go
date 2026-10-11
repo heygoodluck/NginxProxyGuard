@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -202,6 +203,35 @@ func assertNoTempLeftovers(t *testing.T, dir string) {
 	for _, e := range entries {
 		if strings.HasPrefix(e.Name(), ".npg-restore-") {
 			t.Errorf("temp file left behind: %s", e.Name())
+		}
+	}
+}
+
+// A restored host's Advanced Config can use a global rate limit zone by its
+// old name, which only an nginx.conf rendered from the restored settings
+// defines (as an alias). The host configs are rendered first, so their test
+// fails until nginx.conf is rendered: the test is retried by rendering it,
+// whose own test covers the whole tree.
+func TestTestRestoredConfigRendersNginxConfWhenTheTestFails(t *testing.T) {
+	testErr := errors.New(`nginx: [emerg] zero size shared memory zone "global_req_limit"`)
+	for _, tc := range []struct {
+		name        string
+		testErr     error
+		renderErr   error
+		wantRender  bool
+		wantErr     error
+		wantRenders int
+	}{
+		{"the test passes", nil, nil, false, nil, 0},
+		{"nginx.conf rendered from the restored settings passes", testErr, nil, true, nil, 1},
+		{"nginx.conf rendered from the restored settings fails too", testErr, errors.New("nginx -t rejected nginx.conf"), false, testErr, 1},
+	} {
+		renders := 0
+		rendered, err := testRestoredConfig(context.Background(),
+			func(context.Context) error { return tc.testErr },
+			func(context.Context) error { renders++; return tc.renderErr })
+		if rendered != tc.wantRender || err != tc.wantErr || renders != tc.wantRenders {
+			t.Errorf("%s: rendered=%v err=%v renders=%d, want %v %v %d", tc.name, rendered, err, renders, tc.wantRender, tc.wantErr, tc.wantRenders)
 		}
 	}
 }
