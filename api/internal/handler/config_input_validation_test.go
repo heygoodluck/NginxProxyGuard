@@ -111,12 +111,14 @@ func TestAccessListWrites_RejectLineBreaksAndBadRules(t *testing.T) {
 
 func TestAccessListCreate_SavesValidRulesTrimmed(t *testing.T) {
 	db, mock := newMockDB(t)
+	mock.ExpectBegin()
 	mock.ExpectQuery(`INSERT INTO access_lists`).
 		WithArgs("Office #2", "", true, false).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("00000000-0000-0000-0000-0000000000a1"))
 	mock.ExpectExec(`INSERT INTO access_list_items`).
 		WithArgs("00000000-0000-0000-0000-0000000000a1", "allow", "192.0.2.0/24", "office LAN", 0).
 		WillReturnError(errStop)
+	mock.ExpectRollback()
 	h := NewAccessListHandler(repository.NewAccessListRepository(&database.DB{DB: db}), nil)
 	rec := callJSON(t, h.Create, http.MethodPost,
 		`{"name":"Office #2","items":[{"directive":"allow","address":" 192.0.2.0/24 ","description":"office LAN"},{"directive":"deny","address":"all"}]}`)
