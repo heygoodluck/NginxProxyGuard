@@ -32,26 +32,76 @@ var (
 )
 
 // FindLegacyZoneRefs reads Advanced Config and custom HTTP config texts for
-// the old zone names. Text after a "#" on a line is a comment and is skipped.
+// the old zone names. Comments are skipped (uncommented).
 func FindLegacyZoneRefs(texts ...string) LegacyZoneRefs {
 	refs := LegacyZoneRefs{RateHosts: map[string]bool{}}
 	for _, text := range texts {
-		for _, line := range strings.Split(text, "\n") {
-			if i := strings.IndexByte(line, '#'); i >= 0 {
-				line = line[:i]
-			}
-			for _, m := range legacyRateZoneRef.FindAllStringSubmatch(line, -1) {
-				refs.RateHosts[m[1]] = true
-			}
-			if legacyGlobalConnRef.MatchString(line) {
-				refs.GlobalConn = true
-			}
-			if legacyGlobalReqRef.MatchString(line) {
-				refs.GlobalReq = true
-			}
+		text = uncommented(text)
+		for _, m := range legacyRateZoneRef.FindAllStringSubmatch(text, -1) {
+			refs.RateHosts[m[1]] = true
+		}
+		if legacyGlobalConnRef.MatchString(text) {
+			refs.GlobalConn = true
+		}
+		if legacyGlobalReqRef.MatchString(text) {
+			refs.GlobalReq = true
 		}
 	}
 	return refs
+}
+
+// uncommented returns text without its comments, found the way nginx's
+// tokenizer finds them: a "#" starts a comment, which runs to the end of the
+// line, only where a token would start and outside quotes. Inside a token
+// ("a#b", "${host}#b") or a quoted argument ("a#b") it is a character like
+// any other. A quote opens a quoted argument only where a token would start,
+// and a backslash takes the next character as it is, in quotes or not.
+func uncommented(text string) string {
+	var b strings.Builder
+	b.Grow(len(text))
+	tokenStart := true // the next character starts a token
+	var quote byte     // the quote of the argument being read, or 0
+	var prev byte      // the character before c
+	for i := 0; i < len(text); i++ {
+		c := text[i]
+		switch {
+		case c == '\\':
+			if i+1 < len(text) {
+				b.WriteByte(c)
+				i++
+				c = text[i]
+			}
+			if quote == 0 {
+				tokenStart = false
+			}
+		case quote != 0:
+			if c == quote {
+				quote = 0 // nginx wants a space, ";" or "{" next
+			}
+		case c == '#' && tokenStart:
+			for i+1 < len(text) && text[i+1] != '\n' {
+				i++
+			}
+			continue // the line's end is read next
+		case c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == ';':
+			tokenStart = true
+		case c == '{':
+			// "${" goes on with a variable's name; otherwise "{" ends the
+			// token and opens a block.
+			tokenStart = tokenStart || prev != '$'
+		case c == '}':
+			// Where a token would start it closes a block; inside one it is
+			// a character of the token.
+		case tokenStart && (c == '"' || c == '\''):
+			quote = c
+			tokenStart = false
+		default:
+			tokenStart = false
+		}
+		prev = c
+		b.WriteByte(c)
+	}
+	return b.String()
 }
 
 // RateZone reports whether host hostID's old zone name is used.

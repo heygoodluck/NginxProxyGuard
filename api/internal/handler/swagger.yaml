@@ -2496,6 +2496,8 @@ paths:
       responses:
         '204':
           description: Access list deleted
+        '404':
+          description: Access list not found
 
   # ============================================================================
   # Banned IPs

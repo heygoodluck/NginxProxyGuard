@@ -48,3 +48,21 @@ func TestAccessListChangesRecordsARenameUnderRenamed(t *testing.T) {
 		t.Errorf("changes = %#v, want %#v", got, want)
 	}
 }
+
+// allow and deny lines are first-match, so a new order of the same rules
+// changes which clients get in: it is recorded as "reordered".
+func TestAccessListChangesRecordsAReorder(t *testing.T) {
+	before := &model.AccessList{Name: "office", Items: []model.AccessListItem{
+		{Directive: "allow", Address: "192.0.2.10"},
+		{Directive: "deny", Address: "192.0.2.0/24"},
+		{Directive: "deny", Address: "all"},
+	}}
+	after := &model.AccessList{Name: "office", Items: []model.AccessListItem{
+		{Directive: "deny", Address: "192.0.2.0/24"},
+		{Directive: "allow", Address: "192.0.2.10"},
+		{Directive: "deny", Address: "all"},
+	}}
+	if got, want := accessListChanges(before, after), (map[string]interface{}{"reordered": true}); !reflect.DeepEqual(got, want) {
+		t.Errorf("changes = %#v, want %#v", got, want)
+	}
+}

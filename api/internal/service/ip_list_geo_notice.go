@@ -74,13 +74,14 @@ func WarnIPListMatchingChangeOnce(ctx context.Context, db *sql.DB) {
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var scope, list, entry string
+		var scope, list string
+		var entry sql.NullString // a text[] element can be NULL; it names no client
 		if err := rows.Scan(&scope, &list, &entry); err != nil {
 			log.Printf("[WARN] [Startup] could not read an IP list entry for the v2.62.0 notice: %v", err)
 			return
 		}
-		if startsMatchingAsGeo(entry) {
-			log.Printf("[WARN] [Startup] %s %s entry %q matches more clients from v2.62.0 on, which matches each entry as the range it names (before, IPv6 ranges and IPv6 addresses in another notation matched no client, and IPv4 ranges shorter than /8 matched only their first /8); remove it if those clients should not be let through", scope, list, entry)
+		if entry.Valid && startsMatchingAsGeo(entry.String) {
+			log.Printf("[WARN] [Startup] %s %s entry %q matches more clients from v2.62.0 on, which matches each entry as the range it names (before, IPv6 ranges and IPv6 addresses in another notation matched no client, and IPv4 ranges shorter than /8 matched only their first /8); remove it if those clients should not be let through", scope, list, entry.String)
 		}
 	}
 	if err := rows.Err(); err != nil {

@@ -169,10 +169,11 @@ func (h *AccessListHandler) Delete(c echo.Context) error {
 }
 
 // accessListChanges describes an access list update for the audit log: the
-// rules added and removed ("allow 192.0.2.0/24") and, when they changed, the
-// name (as "renamed") and satisfy_any as [before, after]. The audit service
-// fills the entry's "name" with the list's current name, so a rename under
-// that key would lose the old name.
+// rules added and removed ("allow 192.0.2.0/24"), "reordered" when the same
+// rules now stand in another order (allow and deny are first-match), and,
+// when they changed, the name (as "renamed") and satisfy_any as [before,
+// after]. The audit service fills the entry's "name" with the list's current
+// name, so a rename under that key would lose the old name.
 func accessListChanges(before, after *model.AccessList) map[string]interface{} {
 	details := map[string]interface{}{}
 	rule := func(it model.AccessListItem) string { return it.Directive + " " + it.Address }
@@ -200,6 +201,14 @@ func accessListChanges(before, after *model.AccessList) map[string]interface{} {
 	}
 	if len(removed) > 0 {
 		details["removed"] = removed
+	}
+	if len(added) == 0 && len(removed) == 0 {
+		for i := range before.Items {
+			if rule(before.Items[i]) != rule(after.Items[i]) {
+				details["reordered"] = true
+				break
+			}
+		}
 	}
 	if before.Name != after.Name {
 		details["renamed"] = []string{before.Name, after.Name}

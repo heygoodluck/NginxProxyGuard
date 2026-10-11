@@ -1,6 +1,14 @@
 package service
 
-import "testing"
+import (
+	"bytes"
+	"context"
+	"log"
+	"strings"
+	"testing"
+
+	"github.com/DATA-DOG/go-sqlmock"
+)
 
 func TestStartsMatchingAsGeo(t *testing.T) {
 	for entry, want := range map[string]bool{
@@ -20,5 +28,37 @@ func TestStartsMatchingAsGeo(t *testing.T) {
 		if got := startsMatchingAsGeo(entry); got != want {
 			t.Errorf("startsMatchingAsGeo(%q) = %v, want %v", entry, got, want)
 		}
+	}
+}
+
+// A list can hold a NULL element (text[] allows it). It is skipped: stopping
+// at it would leave the marker unwritten, and the notice would be logged again
+// at every start.
+func TestIPListNoticeSkipsNullEntries(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	var logs bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(prev) })
+
+	mock.ExpectQuery(`SELECT EXISTS`).WithArgs(ipListGeoMarker).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+	mock.ExpectQuery(`unnest`).WillReturnRows(sqlmock.NewRows([]string{"scope", "list", "ip"}).
+		AddRow("host app.example.com", "priority allow", nil).
+		AddRow("global", "URI block exception", "2001:db8::/32"))
+	mock.ExpectExec(`INSERT INTO schema_migrations`).WithArgs(ipListGeoMarker).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	WarnIPListMatchingChangeOnce(context.Background(), db)
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("the notice stopped before it recorded its marker: %v", err)
+	}
+	if !strings.Contains(logs.String(), `global URI block exception entry "2001:db8::/32"`) {
+		t.Errorf("the entry after the NULL was not named:\n%s", logs.String())
 	}
 }
