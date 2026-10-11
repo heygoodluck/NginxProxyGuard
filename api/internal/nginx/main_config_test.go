@@ -566,3 +566,34 @@ func TestMainConfig_KeyMapsWrittenWithoutTrustedIPs(t *testing.T) {
 		}
 	}
 }
+
+// Each rate-limited host defines five variables with long names, and from
+// about 31 such hosts nginx's variables hash no longer fits the default
+// max size (1024) with 128-byte buckets: nginx -t then warns "could not build
+// optimal variables_hash". A max size of 4096 alone fits about 60 such hosts;
+// with 256-byte buckets it fits about 400.
+func TestMainConfig_VariablesHashSizedForManyRateLimitedHosts(t *testing.T) {
+	out := renderOnly(t, baselineSettings())
+	if n := strings.Count(out, "variables_hash_max_size"); n != 1 || !strings.Contains(out, "    variables_hash_max_size 4096;\n") {
+		t.Errorf("want one `variables_hash_max_size 4096;` in the http block, got %d variables_hash_max_size line(s)", n)
+	}
+	if n := strings.Count(out, "variables_hash_bucket_size"); n != 1 || !strings.Contains(out, "    variables_hash_bucket_size 256;\n") {
+		t.Errorf("want one `variables_hash_bucket_size 256;` in the http block, got %d variables_hash_bucket_size line(s)", n)
+	}
+}
+
+// A second variables_hash_max_size in the http block fails nginx -t
+// ("directive is duplicate"), so one the custom HTTP config sets is the only
+// one. A commented-out line sets nothing.
+func TestMainConfig_VariablesHashMaxSizeLeftToCustomHTTPConfig(t *testing.T) {
+	s := baselineSettings()
+	s.CustomHTTPConfig = "variables_hash_max_size 8192;"
+	out := renderOnly(t, s)
+	if n := strings.Count(out, "variables_hash_max_size"); n != 1 || !strings.Contains(out, "variables_hash_max_size 8192;") {
+		t.Errorf("want only the custom HTTP config's variables_hash_max_size, got %d line(s)", n)
+	}
+	s.CustomHTTPConfig = "# variables_hash_max_size 8192;"
+	if !strings.Contains(renderOnly(t, s), "    variables_hash_max_size 4096;\n") {
+		t.Error("a commented-out variables_hash_max_size in the custom HTTP config left nginx.conf without its own")
+	}
+}

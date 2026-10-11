@@ -161,8 +161,9 @@ http {
 {{end}}    keepalive_timeout {{.KeepaliveTimeout}};
     keepalive_requests {{.KeepaliveRequests}};
     types_hash_max_size {{.TypesHashMaxSize}};
-    variables_hash_bucket_size 128;
-    server_names_hash_bucket_size 128;
+    variables_hash_bucket_size 256;
+{{if .SetVariablesHashMaxSize}}    variables_hash_max_size 4096;
+{{end}}    server_names_hash_bucket_size 128;
 {{if .ServerTokens}}    server_tokens on;
 {{else}}    server_tokens off;
 {{end}}{{if .ResetTimedoutConnection}}    reset_timedout_connection on;
@@ -475,6 +476,12 @@ type MainConfigData struct {
 	// Pre-joined in Go because the main nginx template has no func map.
 	GlobalTrustedIPsBypassWAFCSV string
 
+	// SetVariablesHashMaxSize writes variables_hash_max_size: each
+	// rate-limited host defines five variables, too many for nginx's default
+	// from about 31 such hosts (with 256-byte buckets, 4096 fits about 400).
+	// Not when the custom HTTP config sets it: a second one fails nginx -t.
+	SetVariablesHashMaxSize bool
+
 	CustomHTTPConfig   string
 	CustomStreamConfig string
 }
@@ -619,6 +626,9 @@ func buildMainConfigData(s *model.GlobalSettings, trustedIPs []string, trustedBy
 	if trustedBypassWAF && len(trustedIPs) > 0 {
 		d.GlobalTrustedIPsBypassWAFCSV = strings.Join(trustedIPs, ",")
 	}
+	// The custom HTTP config sits at the http block's top level, as Advanced
+	// Config sits at the server block's.
+	d.SetVariablesHashMaxSize = !advancedConfigHasTopLevel(s.CustomHTTPConfig, "variables_hash_max_size")
 	if s.WorkerProcesses <= 0 {
 		d.WorkerProcessesStr = "auto"
 	} else {
