@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -802,6 +803,15 @@ func (s *ProxyHostService) Create(ctx context.Context, req *model.CreateProxyHos
 
 		// Atomic: generate config + WAF config + test + reload (with global lock)
 		if err := s.nginx.GenerateConfigAndReload(ctx, configData, wafExclusions); err != nil {
+			if errors.Is(err, nginx.ErrReloadRejected) {
+				// nginx -t accepted the new host's files and the running nginx
+				// refused them (nginx.ErrReloadRejected): the host stays as
+				// saved, marked the way Update marks a host nginx did not
+				// take, and is returned with the error so Clone can finish.
+				_ = s.repo.UpdateConfigStatus(ctx, host.ID, "error", err.Error())
+				metrics.NginxConfigStatus.WithLabelValues(host.ID).Set(0)
+				return host, fmt.Errorf("failed to generate nginx config: %w", err)
+			}
 			// Rollback. Delete the DB row FIRST, then remove the config — same
 			// ordering as Delete() (#21 zombie-conf race). If the config were
 			// removed while the row remained, a concurrent SyncAllConfigs (also

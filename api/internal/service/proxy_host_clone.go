@@ -2,11 +2,13 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
 
 	"nginx-proxy-guard/internal/model"
+	"nginx-proxy-guard/internal/nginx"
 )
 
 // boolPtr returns a pointer to a bool value
@@ -170,9 +172,13 @@ func (s *ProxyHostService) Clone(ctx context.Context, sourceID string, req *mode
 
 	// Create the new host
 	newHost, err := s.Create(ctx, createReq)
-	if err != nil {
+	if err != nil && (newHost == nil || !errors.Is(err, nginx.ErrReloadRejected)) {
 		return nil, fmt.Errorf("failed to create cloned proxy host: %w", err)
 	}
+	// A reload nginx refused leaves the new host saved (Create keeps it):
+	// copy the rest of the source too, so that what is saved is the whole
+	// clone, and report the refusal at the end.
+	rejected := err
 
 	// Request new certificate if requested
 	// Request new certificate if provider is specified
@@ -224,6 +230,10 @@ func (s *ProxyHostService) Clone(ctx context.Context, sourceID string, req *mode
 		if _, err := s.Update(ctx, newHost.ID, nil); err != nil {
 			log.Printf("[WARN] Failed to regenerate nginx config for cloned host: %v", err)
 		}
+	}
+
+	if rejected != nil {
+		return nil, fmt.Errorf("apply the cloned proxy host: %w", rejected)
 	}
 
 	// Return fresh host data
