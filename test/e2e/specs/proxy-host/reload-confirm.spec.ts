@@ -2,12 +2,15 @@ import { test, expect } from '@playwright/test';
 import { spawnSync } from 'child_process';
 import * as net from 'net';
 import { APIHelper } from '../../utils/api-helper';
+import { ProxyHostListPage } from '../../pages/proxy-host-list.page';
+import { ProxyHostFormPage } from '../../pages/proxy-host-form.page';
 
 /**
  * A reload nginx refuses is reported (409 nginx_reload_rejected) instead of
- * passing as applied, and a host's rate limit zone no longer makes nginx
- * refuse reloads when its exception list goes from empty to non-empty and
- * back.
+ * passing as applied, a host created in the form while nginx refuses keeps
+ * the form's other settings, and a host's rate limit zone no longer makes
+ * nginx refuse reloads when its exception list goes from empty to non-empty
+ * and back.
  */
 test.describe.configure({ mode: 'serial' });
 
@@ -15,7 +18,7 @@ const API = 'http://127.0.0.1:19080';
 const PROXY_CONTAINER = process.env.NPG_TEST_PROXY_CONTAINER || 'npg-test-proxy';
 // Hosts this file creates. The sweep in afterAll deletes only these: the
 // other spec file using the r1- prefix may be running in parallel.
-const OWN_HOST_PREFIXES = ['r1-stream-', 'r1-rl-'];
+const OWN_HOST_PREFIXES = ['r1-stream-', 'r1-rl-', 'r1-ui-'];
 
 /**
  * The nginx container's log since `since`. nginx writes its error log, where
@@ -140,6 +143,84 @@ test.describe('Reload confirmation (v2.62.0)', () => {
     }
     expect(deleted, 'deleting the refused host reloads nginx cleanly').toEqual([204]);
     expect((await api.getProxyHosts()).filter((h) => h.stream_listen_port === port)).toHaveLength(0);
+  });
+
+  test('a host created in the form while nginx refuses reloads keeps the form settings', async ({ page, request }) => {
+    // Same constraint as the test above: a stream host on a taken port keeps
+    // nginx refusing every reload while its file is on disk.
+    test.skip(
+      !(process.env.E2E_RELOAD_REJECT === '1' && test.info().config.workers === 1),
+      'refuses every reload while it runs; run alone with E2E_RELOAD_REJECT=1 and --workers=1'
+    );
+    test.setTimeout(120000);
+    const port = 18997;
+    const domain = `r1-ui-${Date.now()}.example.com`;
+    blocker = await holdPort(port);
+    const since = new Date().toISOString();
+    const deleted: number[] = [];
+    try {
+      const res = await request.post(`${API}/api/v1/proxy-hosts`, {
+        headers,
+        data: {
+          domain_names: [`r1-stream-${Date.now()}`],
+          forward_host: '127.0.0.1',
+          forward_port: 19080,
+          forward_scheme: 'tcp',
+          proxy_type: 'stream',
+          stream_listen_port: port,
+          stream_protocol: 'tcp',
+          enabled: true,
+        },
+      });
+      expect(res.status(), 'nginx refuses the stream host on the taken port').toBe(409);
+
+      // Create a host in the form with a bot filter, saved after the host.
+      const listPage = new ProxyHostListPage(page);
+      const formPage = new ProxyHostFormPage(page);
+      await listPage.goto();
+      await listPage.clickAddHost();
+      await formPage.fillDomain(domain);
+      await formPage.fillForwardHost('127.0.0.1');
+      await formPage.fillForwardPort(19080);
+      await formPage.toggleBotFilter(true);
+      await formPage.switchTab('advanced');
+      await formPage.saveButton.click();
+
+      // The host is saved: the form says so as a warning, with the reason.
+      await expect(
+        page.getByRole('heading', { name: /^The host is saved, but nginx did not accept the new configuration/ })
+      ).toBeVisible({ timeout: 60000 });
+      await expect(page.locator('pre').filter({ hasText: 'bind()' })).toBeVisible();
+      await page.locator('.fixed.inset-0 button').filter({ hasText: /^close$/i }).click();
+      await formPage.expectClosed();
+
+      const saved = (await api.getProxyHosts()).find((h) => h.domain_names?.[0] === domain);
+      expect(saved, 'the host is saved').toBeTruthy();
+      const botFilter = await api.getBotFilter(saved!.id);
+      expect(botFilter?.enabled, "the form's bot filter is saved with it").toBe(true);
+    } finally {
+      try {
+        // One "still could not bind()" per refused reload: the stream host's,
+        // the form's create and its regenerate. Delete only after the last,
+        // so no delete is judged by an earlier reload's lines.
+        await eventually(
+          () => (nginxLogSince(since).match(/still could not bind\(\)/g) || []).length >= 3,
+          'nginx gives up on the port for each refused reload',
+          30000
+        ).catch(() => undefined);
+        // The stream host first: its file is what nginx refuses.
+        const hosts = await api.getProxyHosts();
+        for (const h of hosts.filter((h) => h.stream_listen_port === port)) {
+          deleted.push((await request.delete(`${API}/api/v1/proxy-hosts/${h.id}`, { headers })).status());
+        }
+        for (const h of hosts.filter((h) => h.domain_names?.[0] === domain)) {
+          deleted.push((await request.delete(`${API}/api/v1/proxy-hosts/${h.id}`, { headers })).status());
+        }
+      } finally {
+        releasePort();
+      }
+    }
+    expect(deleted, 'with the stream host gone, nginx takes reloads again').toEqual([204, 204]);
   });
 
   test('adding the first rate limit exception is applied without a restart', async ({ request }) => {
