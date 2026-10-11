@@ -6,7 +6,7 @@ import {
   regenerateHostConfig,
   updateProxyHost,
 } from '../../../api/proxy-hosts'
-import { ApiError } from '../../../api/client'
+import { ApiError, isNginxReloadRefusal } from '../../../api/client'
 import type { CreateProxyHostRequest, ProxyHost } from '../../../types/proxy-host'
 import { isFormValid, normalizeDomains, validateProxyHostForm } from './proxyHostValidation'
 import { allowedAgentsSaveIssue } from '../tabs/security/allowedAgents'
@@ -20,6 +20,13 @@ export interface SaveProgressState {
   currentStep: number
   error: string | null
   errorDetails: string | null
+  /**
+   * Set when the host is saved but nginx refused to load it (409
+   * nginx_reload_rejected): the modal stays open on the warning, and closing
+   * it closes the form, since the host exists.
+   */
+  warning?: string | null
+  warningDetails?: string | null
 }
 
 interface UseProxyHostSubmitArgs {
@@ -87,6 +94,61 @@ export function useProxyHostSubmit({
     }
   }
 
+  /**
+   * Steps 1-2 of a create, once the host is saved: the form's other settings,
+   * the regenerate that applies them, and closing. refusal is the 409 the
+   * create answered when nginx refused to load the saved host: the rest still
+   * runs, and the refusal is shown as a warning at the end.
+   */
+  async function finishCreate(hostId: string, proxyType: string | undefined, refusal?: ApiError) {
+    // Step 1: Additional settings
+    setSaveProgress((prev) => ({ ...prev, currentStep: 1 }))
+
+    const savedAny = proxyType === 'stream'
+      ? false
+      : await extras.saveExtrasForCreate({
+        hostId,
+        botFilterData: state.botFilterData,
+        geoData: state.geoData,
+        blockedCloudProviders: state.blockedCloudProviders,
+        cloudProviderChallengeMode: state.cloudProviderChallengeMode,
+        cloudProviderAllowSearchBots: state.cloudProviderAllowSearchBots,
+        cloudDisableGlobal: state.cloudDisableGlobal,
+      })
+
+    let warning = refusal
+    if (savedAny) {
+      // Regenerate config for this specific host to apply additional settings
+      try {
+        await regenerateHostConfig(hostId)
+      } catch (err) {
+        // nginx refusing this one too leaves the settings saved as well.
+        if (!isNginxReloadRefusal(err)) {
+          if (refusal) queryClient.invalidateQueries({ queryKey: ['proxy-hosts'] })
+          setSaveProgress((prev) => ({
+            ...prev,
+            ...errorToProgress(err, 'Failed to apply nginx config'),
+          }))
+          return
+        }
+        warning = err
+      }
+    }
+
+    // Step 2: Complete
+    queryClient.invalidateQueries({ queryKey: ['proxy-hosts'] })
+    // The form is the only place a brand-new tag is typed, so the group
+    // panel's buckets go stale here unless it is invalidated too.
+    queryClient.invalidateQueries({ queryKey: ['proxy-host-groups'] })
+    if (warning) {
+      const warningDetails = [warning.message, warning.details].filter(Boolean).join('\n\n')
+      setSaveProgress((prev) => ({ ...prev, currentStep: 2, warning: t('saveProgress.reloadRejected'), warningDetails }))
+      return
+    }
+    setSaveProgress((prev) => ({ ...prev, currentStep: 2 }))
+    closeProgressWithDelay()
+  }
+
   // ───── Create mutation ──────────────────────────────────────────────
   const createMutation = useMutation({
     mutationFn: createProxyHost,
@@ -94,44 +156,14 @@ export function useProxyHostSubmit({
       // Step 0: Server processing (DB + config + test + reload)
       setSaveProgress((prev) => ({ ...prev, currentStep: 0 }))
     },
-    onSuccess: async (newHost) => {
-      // Step 1: Additional settings
-      setSaveProgress((prev) => ({ ...prev, currentStep: 1 }))
-
-      const savedAny = newHost.proxy_type === 'stream'
-        ? false
-        : await extras.saveExtrasForCreate({
-          hostId: newHost.id,
-          botFilterData: state.botFilterData,
-          geoData: state.geoData,
-          blockedCloudProviders: state.blockedCloudProviders,
-          cloudProviderChallengeMode: state.cloudProviderChallengeMode,
-          cloudProviderAllowSearchBots: state.cloudProviderAllowSearchBots,
-          cloudDisableGlobal: state.cloudDisableGlobal,
-        })
-
-      if (savedAny) {
-        // Regenerate config for this specific host to apply additional settings
-        try {
-          await regenerateHostConfig(newHost.id)
-        } catch (err) {
-          setSaveProgress((prev) => ({
-            ...prev,
-            ...errorToProgress(err, 'Failed to apply nginx config'),
-          }))
-          return
-        }
+    onSuccess: (newHost) => finishCreate(newHost.id, newHost.proxy_type),
+    onError: async (error, data) => {
+      // Saved, but nginx refused to load it: finish the create with the
+      // saved host's id. A retry would answer that the domain exists.
+      if (isNginxReloadRefusal(error) && error.id) {
+        await finishCreate(error.id, data.proxy_type, error)
+        return
       }
-
-      // Step 2: Complete
-      setSaveProgress((prev) => ({ ...prev, currentStep: 2 }))
-      queryClient.invalidateQueries({ queryKey: ['proxy-hosts'] })
-      // The form is the only place a brand-new tag is typed, so the group
-      // panel's buckets go stale here unless it is invalidated too.
-      queryClient.invalidateQueries({ queryKey: ['proxy-host-groups'] })
-      closeProgressWithDelay()
-    },
-    onError: (error) => {
       setSaveProgress((prev) => ({
         ...prev,
         ...errorToProgress(error, 'Failed to create proxy host'),
@@ -336,9 +368,14 @@ export function useProxyHostSubmit({
     cert.setCertCreating(false)
   }
 
-  /** Close the save-progress modal (e.g. when the user dismisses an error). */
+  /**
+   * Close the save-progress modal (e.g. when the user dismisses an error).
+   * After a warning the host is saved, so the form closes too.
+   */
   function closeSaveProgress() {
+    const saved = !!saveProgress.warning
     setSaveProgress(INITIAL_PROGRESS)
+    if (saved) onClose()
   }
 
   return {

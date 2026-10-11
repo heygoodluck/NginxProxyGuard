@@ -14,6 +14,7 @@ import type { TabType } from './types'
 import { useMemo, useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useEscapeKey } from '../../hooks/useEscapeKey'
+import { isNginxReloadRefusal } from '../../api/client'
 
 interface ProxyHostFormProps {
   host?: ProxyHost | null
@@ -118,7 +119,7 @@ export function ProxyHostForm({ host, initialTab, onClose }: ProxyHostFormProps)
   // discarding every unsaved edit. Let the modal own the key.
   useEscapeKey(
     onClose,
-    !ddnsConfirmOpen && (!saveProgress.isOpen || (saveProgress.isOpen && !!saveProgress.error))
+    !ddnsConfirmOpen && (!saveProgress.isOpen || (saveProgress.isOpen && (!!saveProgress.error || !!saveProgress.warning)))
   )
 
   useEffect(() => {
@@ -368,8 +369,8 @@ export function ProxyHostForm({ host, initialTab, onClose }: ProxyHostFormProps)
             )}
           </div>
 
-          {/* Error message */}
-          {mutation.isError && (
+          {/* Error message (a refused reload is the save progress warning instead) */}
+          {mutation.isError && !isNginxReloadRefusal(mutation.error) && (
             <div className="mx-6 mb-4 bg-red-50 border border-red-200 rounded-lg p-4 text-red-700 text-sm">
               {(mutation.error as Error).message}
             </div>
@@ -481,6 +482,8 @@ export function ProxyHostForm({ host, initialTab, onClose }: ProxyHostFormProps)
         currentStep={saveProgress.currentStep}
         error={saveProgress.error}
         errorDetails={saveProgress.errorDetails}
+        warning={saveProgress.warning}
+        warningDetails={saveProgress.warningDetails}
         onClose={closeSaveProgress}
       />
 

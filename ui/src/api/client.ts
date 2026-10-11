@@ -39,14 +39,30 @@ export class ApiError extends Error {
    * otherwise Korean panel.
    */
   code?: string
+  /**
+   * The id of what a create saved although it answers with an error: a proxy
+   * host created or cloned whose reload nginx refused (409
+   * nginx_reload_rejected).
+   */
+  id?: string
 
-  constructor(message: string, status: number, details?: string, code?: string) {
+  constructor(message: string, status: number, details?: string, code?: string, id?: string) {
     super(message)
     this.name = 'ApiError'
     this.status = status
     this.details = details
     this.code = code
+    this.id = id
   }
+}
+
+/**
+ * True for a 409 nginx_reload_rejected: the change is saved and its config
+ * files are written, but the running nginx refused to load them. The message
+ * says what to do, and details holds nginx's own line.
+ */
+export function isNginxReloadRefusal(err: unknown): err is ApiError {
+  return err instanceof ApiError && err.status === 409 && err.code === 'nginx_reload_rejected'
 }
 
 export async function handleResponse<T>(response: Response): Promise<T> {
@@ -95,7 +111,8 @@ export async function handleResponse<T>(response: Response): Promise<T> {
         required ? `Required permission: ${required}` : details
       )
     }
-    throw new ApiError(message, response.status, details, (errorData as { code?: string } | null)?.code)
+    const body = errorData as { code?: string; id?: string } | null
+    throw new ApiError(message, response.status, details, body?.code, body?.id)
   }
   // Handle empty responses (204 No Content)
   if (response.status === 204) {
@@ -147,7 +164,7 @@ export async function apiDelete(url: string): Promise<void> {
       )
     }
     const error = await response.json().catch(() => ({ error: 'Unknown error' }))
-    throw new ApiError(error.error || `HTTP ${response.status}`, response.status, error.details)
+    throw new ApiError(error.error || `HTTP ${response.status}`, response.status, error.details, error.code)
   }
 }
 

@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { useSearchParams } from 'react-router-dom'
 import { fetchProxyHosts, fetchProxyHostGroups, deleteProxyHost, testProxyHost, updateProxyHost, testProxyHostConfig, cloneProxyHost, toggleProxyHostFavorite } from '../api/proxy-hosts'
+import { isNginxReloadRefusal } from '../api/client'
 import { getCertificate } from '../api/certificates'
 import type { ProxyHost, ProxyHostListFilter } from '../types/proxy-host'
 import type { ProxyHostTestResult } from '../types/proxy-host'
@@ -220,6 +221,14 @@ export function ProxyHostList({ onEdit, onAdd }: ProxyHostListProps) {
         // On error, keep modal open to show error message
       } else {
         resetCloneState()
+      }
+    },
+    onError: (error) => {
+      // A clone nginx refused to load is saved all the same: list it. The
+      // modal shows the server's message, which says so.
+      if (isNginxReloadRefusal(error)) {
+        queryClient.invalidateQueries({ queryKey: ['proxy-hosts'] })
+        queryClient.invalidateQueries({ queryKey: ['proxy-host-groups'] })
       }
     },
   })

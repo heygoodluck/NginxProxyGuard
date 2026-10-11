@@ -8,6 +8,9 @@ interface SaveProgressModalProps {
   currentStep: number
   error?: string | null
   errorDetails?: string | null
+  /** The host is saved, but with something to act on (see SaveProgressState). */
+  warning?: string | null
+  warningDetails?: string | null
   onClose?: () => void
 }
 
@@ -17,13 +20,13 @@ interface Step {
   description: string
 }
 
-export function SaveProgressModal({ isOpen, isEditing, currentStep, error, errorDetails, onClose }: SaveProgressModalProps) {
+export function SaveProgressModal({ isOpen, isEditing, currentStep, error, errorDetails, warning, warningDetails, onClose }: SaveProgressModalProps) {
   const { t } = useTranslation(['proxyHost', 'common'])
   const [elapsedTime, setElapsedTime] = useState(0)
   const [showDetails, setShowDetails] = useState(false)
 
-  // Allow ESC to close only when there's an error and onClose is provided
-  useEscapeKey(() => onClose?.(), isOpen && !!error && !!onClose)
+  // Allow ESC to close only when there's an error or a warning and onClose is provided
+  useEscapeKey(() => onClose?.(), isOpen && (!!error || !!warning) && !!onClose)
 
   // Simplified 3-step process
   const steps: Step[] = [
@@ -61,6 +64,7 @@ export function SaveProgressModal({ isOpen, isEditing, currentStep, error, error
 
   const getStepStatus = (index: number) => {
     if (error && index === currentStep) return 'error'
+    if (warning && index === currentStep) return 'warning'
     if (index < currentStep) return 'completed'
     if (index === currentStep) return 'active'
     return 'pending'
@@ -93,6 +97,8 @@ export function SaveProgressModal({ isOpen, isEditing, currentStep, error, error
                     ? 'bg-primary-50 dark:bg-primary-900/20 border border-primary-200 dark:border-primary-800'
                     : status === 'error'
                     ? 'bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800'
+                    : status === 'warning'
+                    ? 'bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800'
                     : status === 'completed'
                     ? 'bg-green-50 dark:bg-green-900/20'
                     : 'bg-slate-50 dark:bg-slate-700/30'
@@ -114,6 +120,12 @@ export function SaveProgressModal({ isOpen, isEditing, currentStep, error, error
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M6 18L18 6M6 6l12 12" />
                       </svg>
                     </div>
+                  ) : status === 'warning' ? (
+                    <div className="w-5 h-5 rounded-full bg-amber-500 flex items-center justify-center">
+                      <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M12 8v5m0 3h.01" />
+                      </svg>
+                    </div>
                   ) : (
                     <div className="w-5 h-5 rounded-full border-2 border-slate-300 dark:border-slate-600" />
                   )}
@@ -127,6 +139,8 @@ export function SaveProgressModal({ isOpen, isEditing, currentStep, error, error
                         ? 'text-primary-700 dark:text-primary-300'
                         : status === 'error'
                         ? 'text-red-700 dark:text-red-300'
+                        : status === 'warning'
+                        ? 'text-amber-700 dark:text-amber-300'
                         : status === 'completed'
                         ? 'text-green-700 dark:text-green-300'
                         : 'text-slate-500 dark:text-slate-400'
@@ -134,9 +148,9 @@ export function SaveProgressModal({ isOpen, isEditing, currentStep, error, error
                   >
                     {step.label}
                   </div>
-                  {(status === 'active' || status === 'error') && (
+                  {(status === 'active' || status === 'error' || status === 'warning') && (
                     <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                      {status === 'error' ? error : step.description}
+                      {status === 'error' ? error : status === 'warning' ? warning : step.description}
                     </div>
                   )}
                 </div>
@@ -189,12 +203,28 @@ export function SaveProgressModal({ isOpen, isEditing, currentStep, error, error
           </div>
         )}
 
+        {/* Warning: saved, with what to do and nginx's own line */}
+        {warning && !error && (
+          <div className="px-6 py-4 border-t border-slate-200 dark:border-slate-700">
+            <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg p-4">
+              <h4 className="text-sm font-medium text-amber-800 dark:text-amber-200">{warning}</h4>
+              {warningDetails && (
+                <pre className="mt-2 p-3 bg-slate-900 dark:bg-slate-950 rounded-md text-xs text-amber-200 overflow-x-auto whitespace-pre-wrap break-words max-h-48 overflow-y-auto font-mono">
+                  {warningDetails}
+                </pre>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Error Actions */}
-        {error && onClose && (
+        {(error || warning) && onClose && (
           <div className="px-6 py-4 border-t border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50">
             <button
               onClick={onClose}
-              className="w-full px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-lg transition-colors"
+              className={`w-full px-4 py-2 text-sm font-medium text-white rounded-lg transition-colors ${
+                error ? 'bg-red-600 hover:bg-red-700' : 'bg-amber-600 hover:bg-amber-700'
+              }`}
             >
               {t('common:buttons.close')}
             </button>
