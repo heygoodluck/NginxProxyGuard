@@ -2,12 +2,14 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 
 	"github.com/labstack/echo/v4"
 
 	"nginx-proxy-guard/internal/database"
+	"nginx-proxy-guard/internal/nginx"
 )
 
 // Common error messages for clients (no internal details)
@@ -29,11 +31,16 @@ const (
 type ErrorResponse struct {
 	Error   string `json:"error"`
 	Details string `json:"details,omitempty"`
+	// Code names a failure the client can act on, e.g. nginx_reload_rejected.
+	Code string `json:"code,omitempty"`
 }
 
 // internalError logs the actual error and returns a generic message to the client
 func internalError(c echo.Context, operation string, err error) error {
 	log.Printf("[ERROR] %s: %v", operation, err)
+	if status, body, ok := reloadRejectedResponse(err); ok {
+		return c.JSON(status, body)
+	}
 	if status, msg, ok := ClientStatusForDBError(err); ok {
 		return c.JSON(status, ErrorResponse{Error: msg})
 	}
@@ -46,6 +53,9 @@ func internalError(c echo.Context, operation string, err error) error {
 // databaseError logs the database error and returns a generic message
 func databaseError(c echo.Context, operation string, err error) error {
 	log.Printf("[DB ERROR] %s: %v", operation, err)
+	if status, body, ok := reloadRejectedResponse(err); ok {
+		return c.JSON(status, body)
+	}
 	if status, msg, ok := ClientStatusForDBError(err); ok {
 		return c.JSON(status, ErrorResponse{Error: msg})
 	}
@@ -102,6 +112,12 @@ func httpJSONErrorWithDetails(w http.ResponseWriter, message string, status int,
 // httpInternalError is for standard http.ResponseWriter handlers
 func httpInternalError(w http.ResponseWriter, operation string, err error) {
 	log.Printf("[ERROR] %s: %v", operation, err)
+	if status, body, ok := reloadRejectedResponse(err); ok {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		json.NewEncoder(w).Encode(body)
+		return
+	}
 	if status, msg, ok := ClientStatusForDBError(err); ok {
 		httpJSONError(w, msg, status)
 		return
@@ -112,6 +128,12 @@ func httpInternalError(w http.ResponseWriter, operation string, err error) {
 // httpDatabaseError is for standard http.ResponseWriter handlers
 func httpDatabaseError(w http.ResponseWriter, operation string, err error) {
 	log.Printf("[DB ERROR] %s: %v", operation, err)
+	if status, body, ok := reloadRejectedResponse(err); ok {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		json.NewEncoder(w).Encode(body)
+		return
+	}
 	if status, msg, ok := ClientStatusForDBError(err); ok {
 		httpJSONError(w, msg, status)
 		return
@@ -149,4 +171,21 @@ func createdResponse(c echo.Context, data interface{}) error {
 // noContentResponse returns a 204 No Content response
 func noContentResponse(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
+}
+
+// reloadRejectedResponse answers a save whose files nginx -t accepted but the
+// running nginx refused (nginx.ErrReloadRejected) with 409 rather than 500:
+// the change is stored and on disk, and what the operator must do (restart
+// nginx, or free a port) is in the message. 503 is not used because the UI
+// shows its own "server unavailable" text for 502-504.
+func reloadRejectedResponse(err error) (int, ErrorResponse, bool) {
+	var rejected *nginx.ReloadRejectedError
+	if !errors.As(err, &rejected) {
+		return 0, ErrorResponse{}, false
+	}
+	return http.StatusConflict, ErrorResponse{
+		Error:   rejected.Error(),
+		Details: rejected.Detail,
+		Code:    "nginx_reload_rejected",
+	}, true
 }

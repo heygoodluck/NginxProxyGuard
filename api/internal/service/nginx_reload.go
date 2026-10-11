@@ -3,11 +3,13 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
 	"time"
 
+	"nginx-proxy-guard/internal/nginx"
 	"nginx-proxy-guard/internal/repository"
 )
 
@@ -156,7 +158,10 @@ func (r *NginxReloader) scheduleRetryOrGiveUp(reloadErr error) {
 	r.mu.Lock()
 	r.retryCount++
 	attempt := r.retryCount
-	if attempt <= maxReloadRetries {
+	// A reload nginx refused is refused again until its cause is gone (a
+	// restart, or a port freed), and each try holds the nginx lock while it
+	// waits for the outcome: give up at once, with the notification below.
+	if attempt <= maxReloadRetries && !errors.Is(reloadErr, nginx.ErrReloadRejected) {
 		delay := r.retryDelay(attempt)
 		r.pending = true
 		if r.timer != nil {

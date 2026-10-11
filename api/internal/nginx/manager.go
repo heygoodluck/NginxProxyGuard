@@ -3,6 +3,7 @@ package nginx
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -298,6 +299,9 @@ func (m *Manager) GenerateConfigAndReload(ctx context.Context, data ProxyHostCon
 
 		// 4. Test and reload nginx (all config files are complete now)
 		if err := m.testAndReloadNginxWithRetry(ctx); err != nil {
+			if errors.Is(err, ErrReloadRejected) {
+				return err // nginx -t accepted these files: keep them (ErrReloadRejected)
+			}
 			// Rollback: restore previous configs
 			log.Printf("[WARN] Nginx test failed, rolling back config for host %s", data.Host.ID)
 			if configExists && len(configBackup) > 0 {
@@ -386,6 +390,9 @@ func (m *Manager) GenerateConfigAndReloadWithCleanup(ctx context.Context, data P
 
 		// 5. Test and reload nginx
 		if err := m.testAndReloadNginxWithRetry(ctx); err != nil {
+			if errors.Is(err, ErrReloadRejected) {
+				return err // nginx -t accepted these files: keep them (ErrReloadRejected)
+			}
 			// Rollback: restore old config file if test fails
 			if oldConfigExists && len(oldConfigBackup) > 0 {
 				log.Printf("[WARN] Nginx test failed, attempting to restore old config: %s", oldConfigFilename)
@@ -422,6 +429,9 @@ func (m *Manager) RemoveConfigAndReload(ctx context.Context, host *model.ProxyHo
 
 		// Test and reload nginx
 		if err := m.testAndReloadNginxWithRetry(ctx); err != nil {
+			if errors.Is(err, ErrReloadRejected) {
+				return err // nginx -t accepted these files: keep them (ErrReloadRejected)
+			}
 			// After restoring backups, re-apply the previous-good config so nginx
 			// is guaranteed to be running the rolled-back state rather than any
 			// partial state from the failed attempt.
@@ -905,6 +915,9 @@ func (m *Manager) GenerateHostWAFConfigAndReload(ctx context.Context, host *mode
 
 		// 3. Test and reload nginx (with retry for transient errors)
 		if err := m.testAndReloadNginxWithRetry(ctx); err != nil {
+			if errors.Is(err, ErrReloadRejected) {
+				return err // nginx -t accepted these files: keep them (ErrReloadRejected)
+			}
 			// Rollback: restore previous WAF config
 			log.Printf("[WARN] Nginx test failed after WAF config update for host %s, rolling back", host.ID)
 			if wafConfigExists && len(wafConfigBackup) > 0 {

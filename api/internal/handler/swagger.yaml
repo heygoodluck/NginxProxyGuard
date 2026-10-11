@@ -10993,6 +10993,11 @@ components:
           type: string
         message:
           type: string
+        details:
+          type: string
+        code:
+          type: string
+          description: "Machine-readable reason, when there is one. nginx_reload_rejected (409): the change is saved, but the running nginx refused to load it; details holds nginx's message."
     User:
       type: object
       description: |

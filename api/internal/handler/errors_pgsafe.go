@@ -126,6 +126,9 @@ func ClientStatusForDBError(err error) (int, string, bool) {
 // same two properties the shared helpers now have: a malformed identifier is
 // answered with 400, and driver text never reaches the body.
 func directInternalError(c echo.Context, err error) error {
+	if status, body, ok := reloadRejectedResponse(err); ok {
+		return c.JSON(status, body)
+	}
 	if status, msg, ok := ClientStatusForDBError(err); ok {
 		return c.JSON(status, map[string]string{"error": msg})
 	}

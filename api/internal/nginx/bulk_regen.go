@@ -2,6 +2,7 @@ package nginx
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -223,6 +224,9 @@ func (m *Manager) RegenerateConfigsAtomicWithRedirects(ctx context.Context, rend
 			opErr = m.testConfigWithRetry(ctx)
 		}
 		if opErr != nil {
+			if errors.Is(opErr, ErrReloadRejected) {
+				return opErr // nginx -t accepted these files: keep them (ErrReloadRejected)
+			}
 			return rollback(opErr)
 		}
 		return nil
@@ -280,6 +284,9 @@ func (m *Manager) GenerateRedirectConfigAndReload(ctx context.Context, host *mod
 		}
 
 		if err := m.testAndReloadNginxWithRetry(ctx); err != nil {
+			if errors.Is(err, ErrReloadRejected) {
+				return err // nginx -t accepted this file: keep it (ErrReloadRejected)
+			}
 			return rollback(err)
 		}
 		return nil

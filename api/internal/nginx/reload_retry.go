@@ -3,6 +3,7 @@ package nginx
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"regexp"
@@ -61,6 +62,13 @@ func (m *Manager) testAndReloadNginxWithRetry(ctx context.Context) error {
 		err := m.testAndReloadNginx(ctx)
 		if err != nil {
 			lastErr = err
+			if errors.Is(err, ErrReloadRejected) {
+				// nginx -t passed and the master refused the result: another
+				// try is refused the same way, and the files stay (see
+				// ErrReloadRejected).
+				metrics.NginxReloadTotal.WithLabelValues("failed").Inc()
+				return err
+			}
 			if !isTransientReloadError(err) {
 				metrics.NginxReloadTotal.WithLabelValues("failed").Inc()
 				// testAndReloadNginx runs `nginx -t` before `nginx -s reload`,

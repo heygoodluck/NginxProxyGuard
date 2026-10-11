@@ -3,9 +3,12 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
+
+	"nginx-proxy-guard/internal/nginx"
 )
 
 // fakeTestReloader fails the first failFirst TestAndReload calls, then succeeds.
@@ -115,5 +118,40 @@ func TestDebouncedReloadGivesUpAfterMaxRetries(t *testing.T) {
 	_, retries, _ := r.snapshotForTest()
 	if retries != 0 {
 		t.Fatalf("retryCount should reset to 0 after give-up so the next request starts fresh, got %d", retries)
+	}
+}
+
+// rejectingTestReloader answers every TestAndReload with a reload nginx refused.
+type rejectingTestReloader struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (f *rejectingTestReloader) TestAndReload(ctx context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	return fmt.Errorf("apply: %w", &nginx.ReloadRejectedError{Detail: "bind() to 0.0.0.0:18998 failed (98: Address in use)"})
+}
+
+func (f *rejectingTestReloader) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+// A reload nginx refused is refused again until its cause is gone, and every
+// attempt holds the nginx lock while it waits for the outcome.
+func TestDebouncedReloadDoesNotRetryARejectedReload(t *testing.T) {
+	fake := &rejectingTestReloader{}
+	r := NewNginxReloader(fake, nil, 5*time.Millisecond)
+	r.RequestReload(context.Background())
+	waitFor(t, 2*time.Second, "first attempt", func() bool { return fake.callCount() >= 1 })
+	time.Sleep(150 * time.Millisecond)
+	if got := fake.callCount(); got != 1 {
+		t.Fatalf("a refused reload was tried %d times, want 1", got)
+	}
+	if r.IsPending() {
+		t.Fatal("no retry may be pending after a refused reload")
 	}
 }
