@@ -969,6 +969,49 @@ func goldenCases() []goldenCase {
 		})
 	}
 
+	// 17-20) priority allow. Pinned as rendered before v2.62.0 first, so the
+	// change to geo variables shows up as a reviewable diff of these files.
+	// The entries cover an exact IPv4, a /32, a host-bits CIDR, an IPv6 range,
+	// an upper-case IPv6 address, an IPv4-mapped address and a duplicate.
+	{
+		prio := []string{"203.0.113.5", "198.51.100.7/32", "192.0.2.77/24", "2001:db8::/32", "2001:DB8::10", "::ffff:198.51.100.9", "203.0.113.5"}
+		mkGeo := func(hostID string, challenge bool) *model.GeoRestriction {
+			return &model.GeoRestriction{
+				ID:            "00000000-0000-0000-0000-0000000000p1",
+				ProxyHostID:   hostID,
+				Mode:          "whitelist",
+				Countries:     []string{"KR"},
+				AllowedIPs:    append([]string(nil), prio...),
+				Enabled:       true,
+				ChallengeMode: challenge,
+				CreatedAt:     fixtureNow,
+				UpdatedAt:     fixtureNow,
+			}
+		}
+		hDirect := goldenBaseHost("00000000-0000-0000-0000-000000000a12", "prio-direct.example.com")
+		cases = append(cases, goldenCase{name: "priority_allow_direct", data: ProxyHostConfigData{
+			Host: hDirect, GlobalSettings: baseGlobalSettings(), GeoRestriction: mkGeo(hDirect.ID, false)}})
+
+		hChallenge := goldenBaseHost("00000000-0000-0000-0000-000000000a13", "prio-challenge.example.com")
+		cases = append(cases, goldenCase{name: "priority_allow_challenge", data: ProxyHostConfigData{
+			Host: hChallenge, GlobalSettings: baseGlobalSettings(), GeoRestriction: mkGeo(hChallenge.ID, true)}})
+
+		hCloud := goldenBaseHost("00000000-0000-0000-0000-000000000a14", "prio-cloud.example.com")
+		geoOff := mkGeo(hCloud.ID, false)
+		geoOff.Enabled = false
+		cases = append(cases, goldenCase{name: "priority_allow_cloud", data: ProxyHostConfigData{
+			Host: hCloud, GlobalSettings: baseGlobalSettings(), GeoRestriction: geoOff,
+			BlockedCloudIPRanges: []string{"198.51.100.128/25"}}})
+
+		hBot := goldenBaseHost("00000000-0000-0000-0000-000000000a15", "prio-bot.example.com")
+		geoOffBot := mkGeo(hBot.ID, false)
+		geoOffBot.Enabled = false
+		cases = append(cases, goldenCase{name: "priority_allow_bot", data: ProxyHostConfigData{
+			Host: hBot, GlobalSettings: baseGlobalSettings(), GeoRestriction: geoOffBot,
+			BotFilter: &model.BotFilter{ID: "00000000-0000-0000-0000-0000000000p2", ProxyHostID: hBot.ID, Enabled: true,
+				CustomBlockedAgents: "BadBot", CreatedAt: fixtureNow, UpdatedAt: fixtureNow}}})
+	}
+
 	return cases
 }
 
