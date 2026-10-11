@@ -294,9 +294,11 @@ http {
     modsecurity_rules 'SecRule REMOTE_ADDR "@ipMatch {{.GlobalTrustedIPsBypassWAFCSV}}" "id:9000001,phase:1,t:none,nolog,pass,ctl:ruleEngine=Off"';
 {{end}}
 
-{{if and .GlobalTrustedIPs (or .LimitConnEnabled .LimitReqEnabled)}}    # ==========================================================================
+{{if or .LimitConnEnabled .LimitReqEnabled}}    # ==========================================================================
     # Global trusted IPs — bypass http-level limit_conn / limit_req zones.
     # Same pattern as per-host rate_limit.conf.tmpl: empty key = no counting.
+    # Written even with no trusted IPs, so the zones' keys never change: a
+    # running nginx refuses a reload that changes the key of a zone it has.
     # Sourced from system_settings.global_trusted_ips.
     # ==========================================================================
     geo $global_trusted_ip {
@@ -306,25 +308,29 @@ http {
 {{end}}{{if .LimitConnEnabled}}    # ==========================================================================
     # Global connection limit (DDoS protection)
     # ==========================================================================
-{{if .GlobalTrustedIPs}}    map $global_trusted_ip $global_conn_key {
+    map $global_trusted_ip $global_conn_key {
         1       "";
         default $binary_remote_addr;
     }
+    limit_conn_zone $global_conn_key zone=npg_global_conn:{{.LimitConnZoneSize}};
+{{if .LegacyGlobalConnAlias}}    # The zone's name before v2.62.0, still used by name in Advanced Config or
+    # the custom HTTP config. It counts separately from the zone above.
     limit_conn_zone $global_conn_key zone=global_conn_limit:{{.LimitConnZoneSize}};
-{{else}}    limit_conn_zone $binary_remote_addr zone=global_conn_limit:{{.LimitConnZoneSize}};
-{{end}}    limit_conn global_conn_limit {{.LimitConnPerIP}};
+{{end}}    limit_conn npg_global_conn {{.LimitConnPerIP}};
 {{end}}{{if .LimitReqEnabled}}    # ==========================================================================
     # Global request rate limit (DDoS protection)
     # 429 (not default 503) so the existing log_collector status→reason fallback
     # tags blocked requests as block_reason=rate_limit in the access log.
     # ==========================================================================
-{{if .GlobalTrustedIPs}}    map $global_trusted_ip $global_req_key {
+    map $global_trusted_ip $global_req_key {
         1       "";
         default $binary_remote_addr;
     }
+    limit_req_zone $global_req_key zone=npg_global_req:{{.LimitReqZoneSize}} rate={{.LimitReqRate}}r/s;
+{{if .LegacyGlobalReqAlias}}    # The zone's name before v2.62.0, still used by name in Advanced Config or
+    # the custom HTTP config. It counts separately from the zone above.
     limit_req_zone $global_req_key zone=global_req_limit:{{.LimitReqZoneSize}} rate={{.LimitReqRate}}r/s;
-{{else}}    limit_req_zone $binary_remote_addr zone=global_req_limit:{{.LimitReqZoneSize}} rate={{.LimitReqRate}}r/s;
-{{end}}    limit_req zone=global_req_limit burst={{.LimitReqBurst}} nodelay;
+{{end}}    limit_req zone=npg_global_req burst={{.LimitReqBurst}} nodelay;
     limit_req_status 429;
 {{end}}{{if ne .CustomHTTPConfig ""}}
     # ==========================================================================
@@ -441,6 +447,12 @@ type MainConfigData struct {
 	LimitReqRate     int
 	LimitReqBurst    int
 
+	// LegacyGlobalConnAlias and LegacyGlobalReqAlias also define the global
+	// zones under their names from before v2.62.0, which Advanced Config or the
+	// custom HTTP config still uses (LegacyZoneRefs).
+	LegacyGlobalConnAlias bool
+	LegacyGlobalReqAlias  bool
+
 	// TrustedProxyBuiltins are the private/loopback ranges NPG has always
 	// trusted. Always emitted, always first — a containerised deployment
 	// depends on them and they are not operator-removable.
@@ -454,7 +466,7 @@ type MainConfigData struct {
 
 	// GlobalTrustedIPs are IP/CIDR entries from system_settings.global_trusted_ips
 	// that should bypass http-level limit_conn / limit_req. Empty when none are
-	// configured; the template only emits the geo+map blocks when this is set.
+	// configured; the geo+map blocks are written either way while a limit is on.
 	GlobalTrustedIPs []string
 
 	// GlobalTrustedIPsBypassWAFCSV is the comma-joined trusted IP list, set ONLY
@@ -645,7 +657,13 @@ func (m *Manager) GenerateMainNginxConfig(ctx context.Context, s *model.GlobalSe
 	}
 
 	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, buildMainConfigData(s, trustedIPs, trustedBypassWAF, proxies)); err != nil {
+	d := buildMainConfigData(s, trustedIPs, trustedBypassWAF, proxies)
+	refs, err := m.legacyZoneRefs(ctx, s.CustomHTTPConfig)
+	if err != nil {
+		return fmt.Errorf("generate nginx.conf: %w", err)
+	}
+	d.LegacyGlobalConnAlias, d.LegacyGlobalReqAlias = refs.GlobalConn, refs.GlobalReq
+	if err := tmpl.Execute(&buf, d); err != nil {
 		return fmt.Errorf("execute main nginx template: %w", err)
 	}
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -105,6 +106,7 @@ func runStartup(ctx context.Context, c *Container) ([]nginx.DeferredStep, error)
 
 	// Main nginx.conf first, before syncing host configs, so the very first
 	// reload after boot is already on the DB-driven file.
+	warnLegacyZoneNames(ctx, c)
 	log.Println("[Startup] Regenerating main nginx.conf from global settings...")
 	if deferred, err := later.Run(ctx, mainNginxConfStep(c)); deferred {
 		log.Printf("[Startup] nginx is not running yet; nginx.conf stays on its previous version and is applied once nginx is up: %v", err)
@@ -218,6 +220,37 @@ func applyWhenNginxUp(ctx context.Context, c *Container, steps []nginx.DeferredS
 			log.Printf("[Startup] ERROR: applying the %s nginx could not test at boot failed: %v", what, err)
 		}
 	}()
+}
+
+// warnLegacyZoneNames tells the operator, at every start while it is so, that
+// Advanced Config or the custom HTTP config uses a rate limit zone by its name
+// from before v2.62.0. NPG keeps those names defined as aliases
+// (nginx.LegacyZoneRefs), but they count separately, and the first reload
+// after the upgrade can be refused once where such a zone's key changed.
+func warnLegacyZoneNames(ctx context.Context, c *Container) {
+	texts, err := c.Repositories.ProxyHost.ListLegacyZoneRefTexts(ctx)
+	if err != nil {
+		log.Printf("[Startup] Warning: could not read Advanced Config for old rate limit zone names: %v", err)
+	}
+	if settings, err := c.Repositories.GlobalSettings.Get(ctx); err == nil && settings != nil {
+		texts = append(texts, settings.CustomHTTPConfig)
+	}
+	refs := nginx.FindLegacyZoneRefs(texts...)
+	if !refs.Any() {
+		return
+	}
+	var names []string
+	for id := range refs.RateHosts {
+		names = append(names, "rate_"+id+" (now npg_rl_"+id+")")
+	}
+	if refs.GlobalConn {
+		names = append(names, "global_conn_limit (now npg_global_conn)")
+	}
+	if refs.GlobalReq {
+		names = append(names, "global_req_limit (now npg_global_req)")
+	}
+	sort.Strings(names)
+	log.Printf("[WARN] [Startup] Advanced Config or the custom HTTP config uses rate limit zone names from before v2.62.0: %s. They stay defined as separate zones; change the config to the new names. If nginx refuses the first reload after this upgrade, restart the nginx container once.", strings.Join(names, ", "))
 }
 
 // loadGlobalSettingsForStartup loads IPv6/direct-IP settings so nginx

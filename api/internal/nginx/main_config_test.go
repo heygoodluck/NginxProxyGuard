@@ -2,6 +2,7 @@ package nginx
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -247,7 +248,7 @@ func TestMainConfig_RollsBackOnNginxTestFailure(t *testing.T) {
 func TestMainConfig_LimitReqZoneConditional(t *testing.T) {
 	s := baselineSettings()
 	s.LimitReqEnabled = false
-	if strings.Contains(renderOnly(t, s), "zone=global_req_limit") {
+	if strings.Contains(renderOnly(t, s), "zone=npg_global_req") {
 		t.Error("limit_req_zone should not be present when disabled")
 	}
 	s.LimitReqEnabled = true
@@ -255,7 +256,7 @@ func TestMainConfig_LimitReqZoneConditional(t *testing.T) {
 	s.LimitReqRate = 50
 	s.LimitReqBurst = 100
 	out := renderOnly(t, s)
-	if !strings.Contains(out, "zone=global_req_limit:10m rate=50r/s") {
+	if !strings.Contains(out, "zone=npg_global_req:10m rate=50r/s") {
 		t.Errorf("expected limit_req_zone with configured values; got:\n%s", out)
 	}
 	// Issue #130: returning 429 (instead of nginx default 503) lets the
@@ -420,5 +421,96 @@ func TestMainConfig_AccessLogOnRendersStdoutCopy(t *testing.T) {
 	got := httpLevelAccessLogDirectives(t, out)
 	if len(got) != 1 || got[0] != want {
 		t.Errorf("access log copy on must render exactly %q at http level; got %q", want, got)
+	}
+}
+
+// The zones' keys must not change with the trusted list: a running nginx
+// refuses a reload that changes the key of a zone it has.
+func TestMainConfig_GlobalZoneKeysDoNotDependOnTrustedIPs(t *testing.T) {
+	s := baselineSettings()
+	s.LimitConnEnabled, s.LimitConnZoneSize, s.LimitConnPerIP = true, "10m", 50
+	s.LimitReqEnabled, s.LimitReqZoneSize, s.LimitReqRate, s.LimitReqBurst = true, "10m", 50, 100
+	for _, trusted := range [][]string{nil, {"198.51.100.7"}} {
+		m := &Manager{}
+		dir := t.TempDir()
+		m.configPath = filepath.Join(dir, "conf.d")
+		if err := os.MkdirAll(m.configPath, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := m.GenerateMainNginxConfig(context.Background(), s, trusted, false, TrustedProxyConfig{}); err != nil {
+			t.Fatal(err)
+		}
+		b, err := os.ReadFile(filepath.Join(dir, "nginx.conf"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := string(b)
+		for _, want := range []string{
+			"geo $global_trusted_ip {",
+			"limit_conn_zone $global_conn_key zone=npg_global_conn:10m;",
+			"limit_conn npg_global_conn 50;",
+			"limit_req_zone $global_req_key zone=npg_global_req:10m rate=50r/s;",
+			"limit_req zone=npg_global_req burst=100 nodelay;",
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("trusted=%v: missing %q", trusted, want)
+			}
+		}
+		if strings.Contains(out, "zone=global_conn_limit") || strings.Contains(out, "zone=global_req_limit") {
+			t.Errorf("trusted=%v: old names defined without any use of them", trusted)
+		}
+	}
+}
+
+func TestMainConfig_OldGlobalZoneNamesInUseGetAliases(t *testing.T) {
+	s := baselineSettings()
+	s.LimitConnEnabled, s.LimitConnZoneSize, s.LimitConnPerIP = true, "10m", 50
+	s.LimitReqEnabled, s.LimitReqZoneSize, s.LimitReqRate, s.LimitReqBurst = true, "10m", 50, 100
+	s.CustomHTTPConfig = "# limit_conn global_conn_limit 5;\nlimit_req_status 429;"
+	m := &Manager{}
+	dir := t.TempDir()
+	m.configPath = filepath.Join(dir, "conf.d")
+	if err := os.MkdirAll(m.configPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	m.SetLegacyZoneRefSource(func(context.Context) ([]string, error) {
+		return []string{"location /x {\n    limit_req zone=global_req_limit burst=5;\n}"}, nil
+	})
+	if err := m.GenerateMainNginxConfig(context.Background(), s, nil, false, TrustedProxyConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(filepath.Join(dir, "nginx.conf"))
+	out := string(b)
+	if !strings.Contains(out, "limit_req_zone $global_req_key zone=global_req_limit:10m rate=50r/s;") {
+		t.Error("global_req_limit is used by a host but not defined")
+	}
+	if strings.Contains(out, "zone=global_conn_limit") {
+		t.Error("a name in a comment must not define an alias")
+	}
+}
+
+// Rendering without an alias that a host still uses would fail nginx -t with
+// an error that names no file, so a failed read of the hosts' Advanced Config
+// fails the render before nginx.conf is written (as for a host's render).
+func TestMainConfig_FailsWhenOldZoneNamesCannotBeRead(t *testing.T) {
+	s := baselineSettings()
+	s.LimitReqEnabled, s.LimitReqZoneSize, s.LimitReqRate, s.LimitReqBurst = true, "10m", 50, 100
+	m := &Manager{}
+	dir := t.TempDir()
+	m.configPath = filepath.Join(dir, "conf.d")
+	if err := os.MkdirAll(m.configPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dir, "nginx.conf")
+	if err := os.WriteFile(target, []byte("# previous\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	readErr := errors.New("db down")
+	m.SetLegacyZoneRefSource(func(context.Context) ([]string, error) { return nil, readErr })
+	if err := m.GenerateMainNginxConfig(context.Background(), s, nil, false, TrustedProxyConfig{}); !errors.Is(err, readErr) {
+		t.Fatalf("err = %v, want the read error", err)
+	}
+	if b, _ := os.ReadFile(target); string(b) != "# previous\n" {
+		t.Errorf("nginx.conf was written although the old zone names could not be read")
 	}
 }

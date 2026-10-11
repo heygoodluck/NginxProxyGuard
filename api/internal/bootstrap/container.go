@@ -70,6 +70,9 @@ func NewContainer(cfg *config.Config) (*Container, error) {
 	nginxManager.SetHealthProber(nginx.NewHealthProber(nginxContainer, nginxHTTPPort, probeDisabled))
 
 	repos := InitRepositories(db, redisCache)
+	// nginx.conf defines a global limit zone's old name while a host's
+	// Advanced Config still uses it (nginx.LegacyZoneRefs).
+	nginxManager.SetLegacyZoneRefSource(repos.ProxyHost.ListLegacyZoneRefTexts)
 	svcs := InitServices(cfg, db, redisCache, nginxManager, repos)
 	wireServiceCallbacks(svcs, repos)
 	handlers := InitHandlers(repos, svcs, nginxManager, redisCache, db)

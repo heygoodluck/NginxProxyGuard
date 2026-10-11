@@ -49,6 +49,10 @@ type Manager struct {
 	reloadProbe        reloadProbe
 	reloadConfirmWait  time.Duration
 	reloadConfirmEvery time.Duration
+
+	// legacyZoneTexts returns the hosts' Advanced Config that may use a rate
+	// limit zone by its old name (LegacyZoneRefs). Nil: none are read.
+	legacyZoneTexts func(ctx context.Context) ([]string, error)
 }
 
 func NewManager(configPath, certsPath string) *Manager {
@@ -163,6 +167,29 @@ func (m *Manager) SetHealthProber(p *HealthProber) {
 	if p != nil && !p.disabled {
 		m.reloadProbe = &dockerReloadProbe{containerName: m.nginxContainer, exec: p.exec}
 	}
+}
+
+// SetLegacyZoneRefSource wires where GenerateMainNginxConfig reads every
+// host's Advanced Config, enabled or not, for the global zones' old names
+// (LegacyZoneRefs). Call once at bootstrap.
+func (m *Manager) SetLegacyZoneRefSource(src func(ctx context.Context) ([]string, error)) {
+	m.legacyZoneTexts = src
+}
+
+// legacyZoneRefs returns the old zone names that the hosts' Advanced Config
+// and customHTTPConfig use. A failed read is an error: rendering without an
+// alias that a host still uses fails nginx -t with an error naming no file
+// (the same rule as a host's render, getHostConfigData).
+func (m *Manager) legacyZoneRefs(ctx context.Context, customHTTPConfig string) (LegacyZoneRefs, error) {
+	texts := []string{customHTTPConfig}
+	if m.legacyZoneTexts != nil {
+		more, err := m.legacyZoneTexts(ctx)
+		if err != nil {
+			return LegacyZoneRefs{}, fmt.Errorf("read the hosts' Advanced Config for old rate limit zone names: %w", err)
+		}
+		texts = append(texts, more...)
+	}
+	return FindLegacyZoneRefs(texts...), nil
 }
 
 // writeFileAtomic writes data to a file atomically using temp file + fsync + rename
