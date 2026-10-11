@@ -48,6 +48,15 @@ var (
 		Help: "Total hosts isolated by SyncAllConfigs auto-recovery.",
 	})
 
+	// NginxReloadConfirmTotal counts reload signals by what nginx showed
+	// afterwards: "accepted" (it started new workers), "rejected" (it logged
+	// an [emerg] line and kept its previous configuration) or "unconfirmed"
+	// (neither within ReloadConfirmTimeout, or its processes could not be read).
+	NginxReloadConfirmTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "nginx_reload_confirm_total",
+		Help: "nginx reload signals by outcome: accepted, rejected or unconfirmed.",
+	}, []string{"result"})
+
 	// Histograms
 
 	// NginxReloadDurationSeconds tracks the end-to-end duration of
@@ -72,6 +81,14 @@ var (
 		Help:    "Duration of each health probe phase.",
 		Buckets: prometheus.ExponentialBuckets(0.01, 2, 8),
 	}, []string{"probe"})
+
+	// NginxReloadConfirmSeconds tracks how long nginx took to show whether it
+	// took a reload.
+	NginxReloadConfirmSeconds = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "nginx_reload_confirm_seconds",
+		Help:    "Time from a reload signal until nginx showed whether it took it.",
+		Buckets: []float64{0.1, 0.25, 0.5, 1, 2, 3, 5, 10},
+	})
 
 	// Gauges
 
@@ -174,9 +191,11 @@ func Register() {
 			NginxReloadRollbackTotal,
 			NginxHealthProbeFailureTotal,
 			NginxAutoRecoveryTotal,
+			NginxReloadConfirmTotal,
 			NginxReloadDurationSeconds,
 			NginxConfigGenerationDurationSeconds,
 			NginxHealthProbeDurationSeconds,
+			NginxReloadConfirmSeconds,
 			NginxConfigStatus,
 			NginxLastReloadTimestampSeconds,
 			LogCollectorFallbackTotal,

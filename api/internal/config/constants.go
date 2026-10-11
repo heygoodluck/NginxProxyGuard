@@ -125,6 +125,16 @@ const (
 	HealthProbeTimeout = 500 * time.Millisecond
 )
 
+// Reload confirmation — governs nginx.Manager.confirmReload.
+const (
+	// ReloadConfirmTimeout bounds how long a reload waits for nginx to show
+	// that it took the new configuration (new workers) or refused it (an
+	// [emerg] line). A reload that shows neither is reported as applied.
+	ReloadConfirmTimeout = 10 * time.Second
+	// ReloadConfirmPoll is how often nginx's processes are read meanwhile.
+	ReloadConfirmPoll = 100 * time.Millisecond
+)
+
 // GeoIP constants
 const (
 	MinGeoIPDatabaseSize = 1000000 // 1MB minimum for valid GeoIP database

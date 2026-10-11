@@ -41,6 +41,13 @@ type Manager struct {
 	cli nginxCLI // extracted for testability (Phase 0)
 
 	healthProber *HealthProber
+
+	// reloadProbe confirms each reload (reload_confirm.go); nil when the
+	// health probe is off (NPG_HEALTH_PROBE=false). The two durations
+	// override config.ReloadConfirmTimeout and ReloadConfirmPoll in tests.
+	reloadProbe        reloadProbe
+	reloadConfirmWait  time.Duration
+	reloadConfirmEvery time.Duration
 }
 
 func NewManager(configPath, certsPath string) *Manager {
@@ -145,10 +152,16 @@ func (m *Manager) SetEnableIPv6(enabled bool) {
 	m.enableIPv6 = enabled
 }
 
-// SetHealthProber wires the post-reload health verifier. May be called once
-// after NewManager. Pass nil or a disabled prober to opt out.
+// SetHealthProber wires the post-reload health verifier and, unless it is
+// disabled, the reload confirmation (confirmReload) on the same container.
+// May be called once after NewManager. Pass nil or a disabled prober to opt
+// out of both.
 func (m *Manager) SetHealthProber(p *HealthProber) {
 	m.healthProber = p
+	m.reloadProbe = nil
+	if p != nil && !p.disabled {
+		m.reloadProbe = &dockerReloadProbe{containerName: m.nginxContainer, exec: p.exec}
+	}
 }
 
 // writeFileAtomic writes data to a file atomically using temp file + fsync + rename
@@ -431,12 +444,27 @@ func (m *Manager) testConfigInternal(ctx context.Context) error {
 	return m.cli.Test(ctx)
 }
 
-// reloadNginxInternal is the internal reload function without locking
+// reloadNginxInternal signals nginx to reload and, unless confirmation is
+// off, waits for nginx to take or refuse it (confirmReload). It returns
+// *ReloadRejectedError when nginx refused it. Without the lock.
 func (m *Manager) reloadNginxInternal(ctx context.Context) error {
 	if m.skipTest {
 		return nil
 	}
-	return m.cli.Reload(ctx)
+	if m.reloadProbe == nil {
+		return m.cli.Reload(ctx)
+	}
+	master, children, snapErr := m.reloadProbe.Children(ctx)
+	sentAt := time.Now()
+	if err := m.cli.Reload(ctx); err != nil {
+		return err
+	}
+	if snapErr != nil {
+		metrics.NginxReloadConfirmTotal.WithLabelValues("unconfirmed").Inc()
+		log.Printf("[WARN] [NginxReload] could not read nginx's processes before the reload, so whether nginx took it is not checked: %v", snapErr)
+		return nil
+	}
+	return m.confirmReload(ctx, reloadSnapshot{master: master, children: children}, sentAt)
 }
 
 func (m *Manager) GenerateConfig(ctx context.Context, host *model.ProxyHost) error {
