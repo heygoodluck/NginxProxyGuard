@@ -245,6 +245,12 @@ func (h *SecurityHandler) UpdateGlobalURIBlock(c echo.Context) error {
 
 	block, err := h.securityService.UpdateGlobalURIBlock(c.Request().Context(), &req)
 	if err != nil {
+		if reloadRefused(err) && block != nil {
+			h.audit.LogSecurityFeatureUpdate(service.ContextWithAudit(c.Request().Context(), c), "global_uri_block", "global", block.Enabled, map[string]interface{}{
+				"rules_count": len(block.Rules),
+			})
+			return internalError(c, "update global URI block", err)
+		}
 		return databaseError(c, "update global URI block", err)
 	}
 

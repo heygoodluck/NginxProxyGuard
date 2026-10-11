@@ -2,10 +2,12 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 
 	"nginx-proxy-guard/internal/model"
+	"nginx-proxy-guard/internal/nginx"
 	"nginx-proxy-guard/internal/repository"
 	"nginx-proxy-guard/pkg/cache"
 )
@@ -233,6 +235,11 @@ func (s *SecurityService) UpdateGlobalURIBlock(ctx context.Context, req *model.C
 	if s.proxyHostService != nil {
 		if err := s.proxyHostService.SyncAllConfigs(context.Background()); err != nil {
 			log.Printf("[SecurityService] Failed to sync proxy host configs: %v", err)
+			// The block is saved and its files are on disk: the handler
+			// records it and answers 409. Other failures are only logged.
+			if errors.Is(err, nginx.ErrReloadRejected) {
+				return block, fmt.Errorf("apply the global URI block: %w", err)
+			}
 		}
 	}
 

@@ -68,6 +68,11 @@ func (h *SettingsHandler) UpdateGlobalSettings(c echo.Context) error {
 
 	settings, err := h.settingsService.UpdateGlobalSettings(c.Request().Context(), &req)
 	if err != nil {
+		if reloadRefused(err) {
+			h.audit.LogSettingsUpdate(service.ContextWithAudit(c.Request().Context(), c), "전역 설정", map[string]interface{}{
+				"action": "update",
+			})
+		}
 		return directInternalError(c, err)
 	}
 
@@ -83,6 +88,11 @@ func (h *SettingsHandler) UpdateGlobalSettings(c echo.Context) error {
 func (h *SettingsHandler) ResetGlobalSettings(c echo.Context) error {
 	settings, err := h.settingsService.ResetGlobalSettings(c.Request().Context())
 	if err != nil {
+		if reloadRefused(err) {
+			h.audit.LogSettingsUpdate(service.ContextWithAudit(c.Request().Context(), c), "전역 설정", map[string]interface{}{
+				"action": "reset",
+			})
+		}
 		return directInternalError(c, err)
 	}
 
@@ -106,6 +116,12 @@ func (h *SettingsHandler) ApplySettingsPreset(c echo.Context) error {
 	if err != nil {
 		if err.Error() == "invalid preset: "+preset {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid preset"})
+		}
+		if reloadRefused(err) {
+			h.audit.LogSettingsUpdate(service.ContextWithAudit(c.Request().Context(), c), "전역 설정", map[string]interface{}{
+				"action": "apply_preset",
+				"preset": preset,
+			})
 		}
 		return directInternalError(c, err)
 	}

@@ -231,9 +231,16 @@ func (s *SettingsService) UpdateGlobalSettings(ctx context.Context, req *model.U
 	}
 
 	// Regenerate all proxy host configs to apply global settings (timeouts, body size, etc.)
+	// A reload the running nginx refused (nginx.ErrReloadRejected) is the
+	// save's answer, a 409, unless the last reload below is taken: that one
+	// loads everything this save wrote. Other failures are only logged.
+	var refused error
 	if s.proxyHostService != nil {
 		if err := s.proxyHostService.SyncAllConfigs(ctx); err != nil {
 			log.Printf("[SettingsService] Warning: failed to regenerate proxy host configs after global settings change: %v", err)
+			if errors.Is(err, nginx.ErrReloadRejected) {
+				refused = err
+			}
 		}
 	}
 
@@ -252,6 +259,14 @@ func (s *SettingsService) UpdateGlobalSettings(ctx context.Context, req *model.U
 	// Reload nginx to apply all changes
 	if err := s.nginxManager.ReloadNginx(ctx); err != nil {
 		log.Printf("[SettingsService] Warning: failed to reload nginx after global settings change: %v", err)
+		if errors.Is(err, nginx.ErrReloadRejected) {
+			refused = err
+		}
+	} else {
+		refused = nil
+	}
+	if refused != nil {
+		return settings, fmt.Errorf("apply global settings: %w", refused)
 	}
 
 	return settings, nil
@@ -269,9 +284,15 @@ func (s *SettingsService) ResetGlobalSettings(ctx context.Context) (*model.Globa
 	}
 
 	// Regenerate all proxy host configs to apply default global settings
+	// A refused reload is the reset's answer unless the last reload is taken,
+	// as in UpdateGlobalSettings.
+	var refused error
 	if s.proxyHostService != nil {
 		if err := s.proxyHostService.SyncAllConfigs(ctx); err != nil {
 			log.Printf("[SettingsService] Warning: failed to regenerate proxy host configs after global settings reset: %v", err)
+			if errors.Is(err, nginx.ErrReloadRejected) {
+				refused = err
+			}
 		}
 	}
 
@@ -290,6 +311,14 @@ func (s *SettingsService) ResetGlobalSettings(ctx context.Context) (*model.Globa
 	// Reload nginx to apply all changes
 	if err := s.nginxManager.ReloadNginx(ctx); err != nil {
 		log.Printf("[SettingsService] Warning: failed to reload nginx after global settings reset: %v", err)
+		if errors.Is(err, nginx.ErrReloadRejected) {
+			refused = err
+		}
+	} else {
+		refused = nil
+	}
+	if refused != nil {
+		return settings, fmt.Errorf("apply the reset global settings: %w", refused)
 	}
 
 	return settings, nil
