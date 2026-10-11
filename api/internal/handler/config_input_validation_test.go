@@ -102,7 +102,7 @@ func TestAccessListWrites_RejectLineBreaksAndBadRules(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			db, _ := newMockDB(t)
-			h := NewAccessListHandler(repository.NewAccessListRepository(&database.DB{DB: db}), nil)
+			h := NewAccessListHandler(repository.NewAccessListRepository(&database.DB{DB: db}), nil, nil)
 			expectRejected(t, callJSON(t, h.Create, http.MethodPost, tc.body), tc.field)
 			expectRejected(t, callJSON(t, h.Update, http.MethodPut, tc.body, "id", "00000000-0000-0000-0000-000000000001"), tc.field)
 		})
@@ -119,7 +119,7 @@ func TestAccessListCreate_SavesValidRulesTrimmed(t *testing.T) {
 		WithArgs("00000000-0000-0000-0000-0000000000a1", "allow", "192.0.2.0/24", "office LAN", 0).
 		WillReturnError(errStop)
 	mock.ExpectRollback()
-	h := NewAccessListHandler(repository.NewAccessListRepository(&database.DB{DB: db}), nil)
+	h := NewAccessListHandler(repository.NewAccessListRepository(&database.DB{DB: db}), nil, nil)
 	rec := callJSON(t, h.Create, http.MethodPost,
 		`{"name":"Office #2","items":[{"directive":"allow","address":" 192.0.2.0/24 ","description":"office LAN"},{"directive":"deny","address":"all"}]}`)
 	expectAccepted(t, rec)

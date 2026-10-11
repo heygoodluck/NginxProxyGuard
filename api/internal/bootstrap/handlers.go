@@ -60,7 +60,7 @@ func InitHandlers(
 	h.WAFTest = handler.NewWAFTestHandler()
 	h.WAF = handler.NewWAFHandler(repos.WAF, repos.ProxyHost, repos.Geo, repos.GlobalWAF, nginxManager, repos.Log)
 	h.ExploitBlockRule = handler.NewExploitBlockRuleHandler(repos.ExploitBlockRule, repos.ProxyHost, svcs.ProxyHost)
-	h.AccessList = handler.NewAccessListHandler(repos.AccessList, svcs.ProxyHost)
+	h.AccessList = handler.NewAccessListHandler(repos.AccessList, svcs.ProxyHost, svcs.Audit)
 	h.AuthProvider = handler.NewAuthProviderHandler(svcs.AuthProvider)
 	h.RedirectHost = handler.NewRedirectHostHandler(repos.RedirectHost, nginxManager, svcs.Audit)
 	h.Geo = handler.NewGeoHandler(

@@ -14,10 +14,11 @@ import (
 type AccessListHandler struct {
 	repo       *repository.AccessListRepository
 	proxyHosts *service.ProxyHostService
+	audit      *service.AuditService
 }
 
-func NewAccessListHandler(repo *repository.AccessListRepository, proxyHosts *service.ProxyHostService) *AccessListHandler {
-	return &AccessListHandler{repo: repo, proxyHosts: proxyHosts}
+func NewAccessListHandler(repo *repository.AccessListRepository, proxyHosts *service.ProxyHostService, audit *service.AuditService) *AccessListHandler {
+	return &AccessListHandler{repo: repo, proxyHosts: proxyHosts, audit: audit}
 }
 
 // List returns a paginated list of access lists.
@@ -67,6 +68,7 @@ func (h *AccessListHandler) Create(c echo.Context) error {
 		return databaseError(c, "create access list", err)
 	}
 
+	h.audit.LogAccessListCreated(service.ContextWithAudit(c.Request().Context(), c), list.Name)
 	return createdResponse(c, list)
 }
 
@@ -101,6 +103,14 @@ func (h *AccessListHandler) Update(c echo.Context) error {
 		return badRequestError(c, trimInvalidInputPrefix(err))
 	}
 
+	before, err := h.repo.GetByID(c.Request().Context(), id)
+	if err != nil {
+		return databaseError(c, "get access list", err)
+	}
+	if before == nil {
+		return notFoundError(c, "Access list")
+	}
+
 	list, err := h.repo.Update(c.Request().Context(), id, &req)
 	if err != nil {
 		return databaseError(c, "update access list", err)
@@ -108,6 +118,9 @@ func (h *AccessListHandler) Update(c echo.Context) error {
 	if list == nil {
 		return notFoundError(c, "Access list")
 	}
+	// Recorded before the nginx regeneration: the change is saved even if
+	// applying it to nginx fails below.
+	h.audit.LogAccessListUpdated(service.ContextWithAudit(c.Request().Context(), c), list.Name, accessListChanges(before, list))
 
 	// Access list rules are rendered statically into each dependent host's
 	// nginx config, so the edit must fan out to every referencing host —
@@ -124,6 +137,14 @@ func (h *AccessListHandler) Delete(c echo.Context) error {
 	id := c.Param("id")
 	ctx := c.Request().Context()
 
+	existing, err := h.repo.GetByID(ctx, id)
+	if err != nil {
+		return databaseError(c, "get access list", err)
+	}
+	if existing == nil {
+		return notFoundError(c, "Access list")
+	}
+
 	// Capture dependents BEFORE the delete detaches them (the repo clears
 	// proxy_hosts.access_list_id in the same transaction).
 	hostIDs, err := h.proxyHosts.GetHostIDsByAccessList(ctx, id)
@@ -134,6 +155,7 @@ func (h *AccessListHandler) Delete(c echo.Context) error {
 	if err := h.repo.Delete(ctx, id); err != nil {
 		return databaseError(c, "delete access list", err)
 	}
+	h.audit.LogAccessListDeleted(service.ContextWithAudit(ctx, c), existing.Name)
 
 	// Regenerate dependent host configs so the deleted allow/deny rules stop
 	// being enforced by the running nginx.
@@ -144,4 +166,46 @@ func (h *AccessListHandler) Delete(c echo.Context) error {
 	}
 
 	return noContentResponse(c)
+}
+
+// accessListChanges describes an access list update for the audit log: the
+// rules added and removed ("allow 192.0.2.0/24") and, when they changed, the
+// name (as "renamed") and satisfy_any as [before, after]. The audit service
+// fills the entry's "name" with the list's current name, so a rename under
+// that key would lose the old name.
+func accessListChanges(before, after *model.AccessList) map[string]interface{} {
+	details := map[string]interface{}{}
+	rule := func(it model.AccessListItem) string { return it.Directive + " " + it.Address }
+	left := map[string]int{}
+	for _, it := range before.Items {
+		left[rule(it)]++
+	}
+	var added []string
+	for _, it := range after.Items {
+		if left[rule(it)] > 0 {
+			left[rule(it)]--
+			continue
+		}
+		added = append(added, rule(it))
+	}
+	var removed []string
+	for _, it := range before.Items {
+		if left[rule(it)] > 0 {
+			left[rule(it)]--
+			removed = append(removed, rule(it))
+		}
+	}
+	if len(added) > 0 {
+		details["added"] = added
+	}
+	if len(removed) > 0 {
+		details["removed"] = removed
+	}
+	if before.Name != after.Name {
+		details["renamed"] = []string{before.Name, after.Name}
+	}
+	if before.SatisfyAny != after.SatisfyAny {
+		details["satisfy_any"] = []bool{before.SatisfyAny, after.SatisfyAny}
+	}
+	return details
 }

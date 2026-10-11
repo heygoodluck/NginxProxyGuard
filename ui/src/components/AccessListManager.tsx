@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { getAccessLists, createAccessList, updateAccessList, deleteAccessList } from '../api/access';
 import type { AccessList, AccessListItem, CreateAccessListRequest } from '../types/access';
+import { usePermissions } from '../hooks/usePermissions';
 import { HelpTip } from './common/HelpTip';
 import { ModalShell } from './common/ModalShell';
 import {
@@ -249,6 +250,9 @@ function DirectiveBadge({ directive }: { directive: 'allow' | 'deny' }) {
 
 export default function AccessListManager() {
   const { t } = useTranslation('accessControl');
+  // Hiding is a convenience; the API refuses writes without access:write.
+  const { can } = usePermissions();
+  const canWrite = can('access:write');
   const queryClient = useQueryClient();
   const [showForm, setShowForm] = useState(false);
   const [editingList, setEditingList] = useState<AccessList | null>(null);
@@ -302,7 +306,7 @@ export default function AccessListManager() {
     <div className="space-y-4">
       <div className="flex justify-between items-center">
         <h2 className="text-xl font-semibold text-slate-900 dark:text-white">{t('list.title')}</h2>
-        <AddButton onClick={() => setShowForm(true)}>{t('actions.add')}</AddButton>
+        {canWrite && <AddButton onClick={() => setShowForm(true)}>{t('actions.add')}</AddButton>}
       </div>
 
       {showForm && (
@@ -337,6 +341,7 @@ export default function AccessListManager() {
               onEdit={() => handleEdit(list)}
               onDelete={() => handleDelete(list.id)}
               deleting={deleteMutation.isPending}
+              canWrite={canWrite}
               t={t}
             />
           ))}
@@ -353,10 +358,11 @@ interface AccessListCardProps {
   onEdit: () => void;
   onDelete: () => void;
   deleting: boolean;
+  canWrite: boolean;
   t: (key: string, opts?: Record<string, unknown>) => string;
 }
 
-function AccessListCard({ list, isOpen, onToggle, onEdit, onDelete, deleting, t }: AccessListCardProps) {
+function AccessListCard({ list, isOpen, onToggle, onEdit, onDelete, deleting, canWrite, t }: AccessListCardProps) {
   const ruleCount = list.items?.length || 0;
   return (
     <EntityCard active={isOpen}>
@@ -404,14 +410,16 @@ function AccessListCard({ list, isOpen, onToggle, onEdit, onDelete, deleting, t 
           {ruleCount}
         </span>
 
-        <div className="flex items-center gap-0.5">
-          <IconButton onClick={onEdit} title={t('actions.edit')}>
-            <PencilIcon />
-          </IconButton>
-          <IconButton onClick={onDelete} title={t('actions.delete')} disabled={deleting} variant="danger">
-            <TrashIcon />
-          </IconButton>
-        </div>
+        {canWrite && (
+          <div className="flex items-center gap-0.5">
+            <IconButton onClick={onEdit} title={t('actions.edit')}>
+              <PencilIcon />
+            </IconButton>
+            <IconButton onClick={onDelete} title={t('actions.delete')} disabled={deleting} variant="danger">
+              <TrashIcon />
+            </IconButton>
+          </div>
+        )}
       </div>
 
       <div className={`grid transition-[grid-template-rows] duration-200 ease-out ${isOpen ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
