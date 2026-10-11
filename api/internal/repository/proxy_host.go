@@ -917,14 +917,15 @@ func (r *ProxyHostRepository) GetByDomain(ctx context.Context, domain string) (*
 	return &host, nil
 }
 
-// ListLegacyZoneRefTexts returns the Advanced Config of the enabled hosts that
-// may use a rate limit zone by its name from before v2.62.0, for
-// nginx.FindLegacyZoneRefs. The pattern only narrows the rows; the caller
-// decides.
+// ListLegacyZoneRefTexts returns the Advanced Config of the hosts that may use
+// a rate limit zone by its name from before v2.62.0, for
+// nginx.FindLegacyZoneRefs. Disabled hosts count too: one enabled later must
+// find the zone already defined. The pattern only narrows the rows; the
+// caller decides.
 func (r *ProxyHostRepository) ListLegacyZoneRefTexts(ctx context.Context) ([]string, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT COALESCE(advanced_config, '') FROM proxy_hosts
-		WHERE enabled = true AND advanced_config ~ '(rate_[0-9a-f]{8}_|global_(conn|req)_limit)'`)
+		WHERE advanced_config ~ '(rate_[0-9a-f]{8}_|global_(conn|req)_limit)'`)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list advanced configs: %w", err)
 	}

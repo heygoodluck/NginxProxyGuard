@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"fmt"
-	"log"
 	"strings"
 	"sync"
 
@@ -560,9 +559,13 @@ func (s *ProxyHostService) getHostConfigData(ctx context.Context, host *model.Pr
 	// A rate limit zone's name before v2.62.0, still used by name in Advanced
 	// Config or the custom HTTP config, is defined as an alias.
 	if data.RateLimitEnabled() {
-		texts, err := s.repo.ListLegacyZoneRefTexts(ctx)
-		if err != nil {
-			log.Printf("[WARN] Host %s: could not read Advanced Config for old rate limit zone names: %v", host.ID, err)
+		var texts []string
+		if s.repo != nil {
+			advanced, err := s.repo.ListLegacyZoneRefTexts(ctx)
+			if err != nil {
+				return data, fmt.Errorf("failed to load old rate limit zone references for host %s: %w", host.ID, err)
+			}
+			texts = advanced
 		}
 		if data.GlobalSettings != nil {
 			texts = append(texts, data.GlobalSettings.CustomHTTPConfig)

@@ -32,7 +32,7 @@ map $trusted_ip_{{$id}} $rate_final_key_{{$id}} {
 }
 limit_req_zone $rate_final_key_{{$id}} zone=npg_rl_{{$id}}:{{.RateLimit.ZoneSize}} rate={{.RateLimit.RequestsPerSecond}}r/s;
 {{- if .LegacyRateZoneAlias}}
-# The zone's name before v2.62.0, which this host's Advanced Config or the
+# The zone's name before v2.62.0, which a host's Advanced Config or the
 # custom HTTP config still uses. It counts separately from the zone above.
 limit_req_zone $rate_final_key_{{$id}} zone=rate_{{$id}}:{{.RateLimit.ZoneSize}} rate={{.RateLimit.RequestsPerSecond}}r/s;
 {{- end}}

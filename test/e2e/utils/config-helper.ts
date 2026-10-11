@@ -40,7 +40,7 @@ export function readHostModsecConfig(hostId: string): string {
 
 /**
  * Grep across all rendered confs and return matching lines. Used to find a host's
- * rate-limit zone, whose name is `rate_<hostId with '-' replaced by '_'>` (nginx
+ * rate-limit zone, whose name is `npg_rl_<hostId with '-' replaced by '_'>` (nginx
  * sanitizeID). The pattern is passed as a direct grep argument (no shell), so
  * there is no interpolation risk; grep exits non-zero on no-match → caught → ''.
  */
