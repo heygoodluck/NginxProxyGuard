@@ -241,30 +241,7 @@
         proxy_cache_use_stale error timeout http_500 http_502 http_503 http_504;
         add_header X-Cache-Status $upstream_cache_status always;
         {{end}}
-        {{if .SecurityHeaders}}{{if .SecurityHeaders.Enabled}}
-        # Security Headers (in location block to ensure they are applied)
-        {{if .SecurityHeaders.HSTSEnabled}}
-        add_header Strict-Transport-Security "max-age={{.SecurityHeaders.HSTSMaxAge}}{{if .SecurityHeaders.HSTSIncludeSubdomains}}; includeSubDomains{{end}}{{if .SecurityHeaders.HSTSPreload}}; preload{{end}}" always;
-        {{end}}
-        {{if .SecurityHeaders.XFrameOptions}}
-        add_header X-Frame-Options "{{headerValue .SecurityHeaders.XFrameOptions}}" always;
-        {{end}}
-        {{if .SecurityHeaders.XContentTypeOptions}}
-        add_header X-Content-Type-Options "nosniff" always;
-        {{end}}
-        {{if .SecurityHeaders.XXSSProtection}}
-        add_header X-XSS-Protection "1; mode=block" always;
-        {{end}}
-        {{if .SecurityHeaders.ReferrerPolicy}}
-        add_header Referrer-Policy "{{headerValue .SecurityHeaders.ReferrerPolicy}}" always;
-        {{end}}
-        {{if .SecurityHeaders.ContentSecurityPolicy}}
-        add_header Content-Security-Policy "{{headerValue .SecurityHeaders.ContentSecurityPolicy}}" always;
-        {{end}}
-        {{if .SecurityHeaders.PermissionsPolicy}}
-        add_header Permissions-Policy "{{headerValue .SecurityHeaders.PermissionsPolicy}}" always;
-        {{end}}
-        {{end}}{{end}}
+        {{template "_host_security_headers" .}}
 {{if .AdvancedConfigLocationLevel}}{{if not .AdvancedConfigHasLocation}}
         # Custom configuration
         {{.AdvancedConfigLocationLevel}}

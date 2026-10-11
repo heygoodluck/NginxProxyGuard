@@ -636,11 +636,16 @@
             return 403;
         }
         # Pass through to upstream if exception matched
-{{if $.AuthProvider}}        # An exception lifts the URI block, not the host's login: the same
+{{if $.AuthProvider}}{{/* No gate inside one of the host's auth bypass paths, where the
+     host asks for no login (underAuthBypass). The gate's error_page and
+     add_header replace the ones the location would inherit, so the
+     server's error pages and the host's security headers follow it, as in
+     location /. */ -}}
+{{if not (underAuthBypass .Pattern .MatchType $.Host.AuthBypassPaths)}}        # An exception lifts the URI block, not the host's login: the same
         # gate as location /. Its error_page replaces the server's, which
         # are repeated after it.
-        {{template "_auth_gate" $}}{{template "_challenge_server_error_pages" $}}
-{{end}}        {{if and $.Upstream $.Upstream.Servers}}proxy_pass {{upstreamScheme $.Upstream}}://{{$.Upstream.Name}};{{if eq (upstreamScheme $.Upstream) "https"}}
+        {{template "_auth_gate" $}}{{template "_challenge_server_error_pages" $}}{{template "_host_security_headers" $}}
+{{end}}{{end}}        {{if and $.Upstream $.Upstream.Servers}}proxy_pass {{upstreamScheme $.Upstream}}://{{$.Upstream.Name}};{{if eq (upstreamScheme $.Upstream) "https"}}
         proxy_ssl_server_name on;
         proxy_ssl_name $host;
         proxy_ssl_verify off;{{end}}{{else}}proxy_pass {{$.Host.ForwardScheme}}://npg_direct_{{sanitizeID $.Host.ID}};
@@ -656,3 +661,32 @@
 {{end}}{{end}}
 {{end}}{{end}}
 {{- end -}}
+{{- /* The host's security headers (model.SecurityHeaders), written into a
+       location: location / of the HTTPS server block, and the URI block
+       exception path where it runs the login gate. An add_header in a
+       location replaces every add_header it would inherit, the http-level
+       defaults included, so a location with one of its own writes these. */ -}}
+{{- define "_host_security_headers"}}{{if .SecurityHeaders}}{{if .SecurityHeaders.Enabled}}
+        # Security Headers (in location block to ensure they are applied)
+        {{if .SecurityHeaders.HSTSEnabled}}
+        add_header Strict-Transport-Security "max-age={{.SecurityHeaders.HSTSMaxAge}}{{if .SecurityHeaders.HSTSIncludeSubdomains}}; includeSubDomains{{end}}{{if .SecurityHeaders.HSTSPreload}}; preload{{end}}" always;
+        {{end}}
+        {{if .SecurityHeaders.XFrameOptions}}
+        add_header X-Frame-Options "{{headerValue .SecurityHeaders.XFrameOptions}}" always;
+        {{end}}
+        {{if .SecurityHeaders.XContentTypeOptions}}
+        add_header X-Content-Type-Options "nosniff" always;
+        {{end}}
+        {{if .SecurityHeaders.XXSSProtection}}
+        add_header X-XSS-Protection "1; mode=block" always;
+        {{end}}
+        {{if .SecurityHeaders.ReferrerPolicy}}
+        add_header Referrer-Policy "{{headerValue .SecurityHeaders.ReferrerPolicy}}" always;
+        {{end}}
+        {{if .SecurityHeaders.ContentSecurityPolicy}}
+        add_header Content-Security-Policy "{{headerValue .SecurityHeaders.ContentSecurityPolicy}}" always;
+        {{end}}
+        {{if .SecurityHeaders.PermissionsPolicy}}
+        add_header Permissions-Policy "{{headerValue .SecurityHeaders.PermissionsPolicy}}" always;
+        {{end}}
+        {{end}}{{end}}{{end -}}

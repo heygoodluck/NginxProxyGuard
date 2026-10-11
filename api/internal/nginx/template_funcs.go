@@ -185,6 +185,7 @@ func GetTemplateFuncMap(apiHost string) template.FuncMap {
 			return directives[name]
 		},
 		"exemptionPattern": exemptionPattern,
+		"underAuthBypass":  underAuthBypass,
 		// Stored values on their way into the config (render_guard.go).
 		"commentText":     commentText,
 		"headerValue":     headerValue,
@@ -682,4 +683,40 @@ func scopeRegexLiteral(s string) string {
 		}
 	}
 	return b.String()
+}
+
+// underAuthBypass reports whether a URI block rule lies inside one of the
+// host's ForwardAuth bypass paths, where the host asks for no login. A bypass
+// path is a prefix location (_auth_bypass_locations), and the rule's exact (=)
+// or prefix (^~) location wins over it for every path the rule covers. Those
+// paths are inside the bypass path when the rule's pattern starts with it,
+// which is how nginx compares prefix locations. pattern is the rule's location
+// argument as uriBlockRules gives it.
+//
+// Anything else stays behind the login. That covers a regex rule or a rule of
+// another type, whose paths cannot be told from the pattern. It also covers a
+// pattern or bypass path that nginx does not read as written (quoted, or with
+// a backslash or whitespace in it), because the text is then not what nginx
+// compares. Whitespace around a bypass path is skipped, as nginx skips it.
+func underAuthBypass(pattern string, matchType model.URIMatchType, bypassPaths []string) bool {
+	if matchType != model.URIMatchExact && matchType != model.URIMatchPrefix {
+		return false
+	}
+	if !plainLocationArg(pattern) {
+		return false
+	}
+	for _, p := range bypassPaths {
+		p = strings.Trim(p, " \t\r\n")
+		if plainLocationArg(p) && strings.HasPrefix(pattern, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// plainLocationArg reports whether nginx reads s, written as a location's
+// argument, as exactly s: s is not empty and has no quote, backslash or
+// whitespace for nginx's tokenizer to act on.
+func plainLocationArg(s string) bool {
+	return s != "" && !strings.ContainsAny(s, "\"'\\ \t\r\n")
 }

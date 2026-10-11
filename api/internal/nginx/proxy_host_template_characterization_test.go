@@ -1038,6 +1038,34 @@ func goldenCases() []goldenCase {
 		})
 	}
 
+	// 23) uri_block_exception_authentik_ssl_headers — the same exception path
+	// on an SSL host with Authentik, whose gate writes an add_header: the
+	// location then writes the host's security headers too, as location / does.
+	{
+		host := goldenSSLHost("00000000-0000-0000-0000-000000000a17", "uri-authentik.example.com")
+		apID := "00000000-0000-0000-0000-0000000000fa"
+		host.AuthProviderID = &apID
+		cases = append(cases, goldenCase{
+			name: "uri_block_exception_authentik_ssl_headers",
+			data: ProxyHostConfigData{
+				Host:           host,
+				GlobalSettings: baseGlobalSettings(),
+				AuthProvider: &model.AuthProvider{ID: apID, Name: "authentik", Type: "authentik",
+					ProviderURL: "http://127.0.0.1:9000", TimeoutMs: 5000, Enabled: true, CreatedAt: fixtureNow, UpdatedAt: fixtureNow},
+				SecurityHeaders: &model.SecurityHeaders{ID: "00000000-0000-0000-0000-0000000000af", ProxyHostID: host.ID, Enabled: true,
+					HSTSEnabled: true, HSTSMaxAge: 31536000, HSTSIncludeSubdomains: true, XFrameOptions: "DENY",
+					XContentTypeOptions: true, ReferrerPolicy: "no-referrer", CreatedAt: fixtureNow, UpdatedAt: fixtureNow},
+				URIBlock: &model.URIBlock{
+					ID: "00000000-0000-0000-0000-0000000000ae", ProxyHostID: host.ID, Enabled: true,
+					Rules: []model.URIBlockRule{{ID: "00000000-0000-0000-0000-0000000000bd", Pattern: "/admin",
+						MatchType: model.URIMatchPrefix, Description: "block admin", Enabled: true}},
+					ExceptionIPs: []string{"192.0.2.20"},
+					CreatedAt:    fixtureNow, UpdatedAt: fixtureNow,
+				},
+			},
+		})
+	}
+
 	return cases
 }
 
