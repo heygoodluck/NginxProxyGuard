@@ -1066,6 +1066,36 @@ func goldenCases() []goldenCase {
 		})
 	}
 
+	// 24) uri_block_exception_under_auth_bypass — a rule inside the host's
+	// auth bypass path /api passes an exception client through without the
+	// login, as the bypass location does, and refuses the paths that
+	// location refuses ($npg_request_path ""). The rule outside it, /admin,
+	// runs the login gate.
+	{
+		host := goldenBaseHost("00000000-0000-0000-0000-000000000a18", "uri-bypass.example.com")
+		apID := "00000000-0000-0000-0000-0000000000fc"
+		host.AuthProviderID = &apID
+		host.AuthBypassPaths = []string{"/api"}
+		cases = append(cases, goldenCase{
+			name: "uri_block_exception_under_auth_bypass",
+			data: ProxyHostConfigData{
+				Host:           host,
+				GlobalSettings: baseGlobalSettings(),
+				AuthProvider: &model.AuthProvider{ID: apID, Name: "authelia", Type: "authelia",
+					ProviderURL: "http://127.0.0.1:9091", TimeoutMs: 5000, Enabled: true, CreatedAt: fixtureNow, UpdatedAt: fixtureNow},
+				URIBlock: &model.URIBlock{
+					ID: "00000000-0000-0000-0000-0000000000b0", ProxyHostID: host.ID, Enabled: true,
+					Rules: []model.URIBlockRule{
+						{ID: "00000000-0000-0000-0000-0000000000be", Pattern: "/api/config", MatchType: model.URIMatchPrefix, Description: "block config", Enabled: true},
+						{ID: "00000000-0000-0000-0000-0000000000bf", Pattern: "/admin", MatchType: model.URIMatchPrefix, Description: "block admin", Enabled: true},
+					},
+					ExceptionIPs: []string{"192.0.2.20"},
+					CreatedAt:    fixtureNow, UpdatedAt: fixtureNow,
+				},
+			},
+		})
+	}
+
 	return cases
 }
 

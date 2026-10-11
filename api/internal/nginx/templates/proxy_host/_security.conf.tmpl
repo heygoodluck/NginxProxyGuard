@@ -640,11 +640,20 @@
      host asks for no login (underAuthBypass). The gate's error_page and
      add_header replace the ones the location would inherit, so the
      server's error pages and the host's security headers follow it, as in
-     location /. */ -}}
+     location /. Without the gate, the bypass location's own guard
+     (_auth_bypass_locations) applies instead. */ -}}
 {{if not (underAuthBypass .Pattern .MatchType $.Host.AuthBypassPaths)}}        # An exception lifts the URI block, not the host's login: the same
         # gate as location /. Its error_page replaces the server's, which
         # are repeated after it.
         {{template "_auth_gate" $}}{{template "_challenge_server_error_pages" $}}{{template "_host_security_headers" $}}
+{{else}}        # Inside the host's auth bypass path: no login, and the request
+        # target is forwarded as sent, as in the bypass location. A path in
+        # which a backend may find a dot segment nginx did not resolve
+        # ($npg_request_path is "") is refused there, and here too.
+        if ($npg_request_path = "") {
+            set $block_reason_var "access_denied";
+            return 403;
+        }
 {{end}}{{end}}        {{if and $.Upstream $.Upstream.Servers}}proxy_pass {{upstreamScheme $.Upstream}}://{{$.Upstream.Name}};{{if eq (upstreamScheme $.Upstream) "https"}}
         proxy_ssl_server_name on;
         proxy_ssl_name $host;

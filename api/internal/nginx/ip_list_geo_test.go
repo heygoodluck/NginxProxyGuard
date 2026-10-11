@@ -71,13 +71,20 @@ func TestURIBlockExceptionGeo(t *testing.T) {
 		Host:           goldenBaseHost(id, "uri-exc.example.com"),
 		GlobalSettings: baseGlobalSettings(),
 		URIBlock: &model.URIBlock{ProxyHostID: id, Enabled: true,
-			Rules:        []model.URIBlockRule{{ID: "00000000-0000-0000-0000-0000000000u1", Pattern: "/admin", MatchType: model.URIMatchPrefix, Enabled: true}},
-			ExceptionIPs: []string{"198.51.100.7/32", "2001:db8::/32", "198.51.100.7/32"}},
+			Rules: []model.URIBlockRule{{ID: "00000000-0000-0000-0000-0000000000u1", Pattern: "/admin", MatchType: model.URIMatchPrefix, Enabled: true}},
+			// A duplicate, the same address without /32, a range with host
+			// bits and an upper-case IPv6 range.
+			ExceptionIPs: []string{"198.51.100.7/32", "2001:db8::/32", "198.51.100.7/32", "198.51.100.7", "192.0.2.77/24", "2001:DB8:1::/48"}},
 	})
 	block := geoBlock(t, out, "$npg_uri_exc_"+sid)
-	for _, want := range []string{"198.51.100.7/32 1;", "2001:db8::/32 1;"} {
-		if !strings.Contains(block, want) {
-			t.Errorf("geo block missing %q:\n%s", want, block)
+	for _, want := range []string{"198.51.100.7/32 1;", "2001:db8::/32 1;", "192.0.2.0/24 1;", "2001:db8:1::/48 1;"} {
+		if strings.Count(block, want) != 1 {
+			t.Errorf("geo block holds %q %d times, want once:\n%s", want, strings.Count(block, want), block)
+		}
+	}
+	for _, unwanted := range []string{"198.51.100.7 1;", "192.0.2.77", "2001:DB8"} {
+		if strings.Contains(block, unwanted) {
+			t.Errorf("geo block holds %q:\n%s", unwanted, block)
 		}
 	}
 	if !strings.Contains(out, "if ($npg_uri_exc_"+sid+" = 1) {\n            set $uri_block_exception 1;") {

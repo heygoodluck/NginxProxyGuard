@@ -2,6 +2,7 @@ package nginx
 
 import (
 	"log"
+	"net/netip"
 	"slices"
 	"strings"
 	"sync"
@@ -131,9 +132,10 @@ func uriBlockRules(rules []model.URIBlockRule) []model.URIBlockRule {
 // else is left out.
 //
 // An address goes into the host's priority allow geo block ($npg_prio_<id>)
-// and the @ipMatch list of the host's ModSecurity file. It is written once,
-// as model.NormalizeIPOrCIDR gives it after the whitespace around it is
-// removed, and left out unless it is then an IP address or a CIDR range.
+// and the @ipMatch list of the host's ModSecurity file. It is written as
+// model.NormalizeIPOrCIDR gives it after the whitespace around it is removed,
+// once for each network (networkOf: the first of 192.0.2.1 and 192.0.2.1/32),
+// and left out unless it is then an IP address or a CIDR range.
 //
 // What is left out is logged. It is not a code the lookup gives or an
 // address: nginx cannot read it as a network in the geo block, ModSecurity
@@ -185,13 +187,27 @@ func renderableAllowedIPs(hostID string, ips []string) []string {
 				hostID, ip)
 			continue
 		}
-		if seen[normalized] {
+		if key := networkOf(normalized); seen[key] {
 			continue // a geo block warns about a network listed twice
+		} else {
+			seen[key] = true
 		}
-		seen[normalized] = true
 		out = append(out, normalized)
 	}
 	return out
+}
+
+// networkOf returns the network an entry normalized by model.NormalizeIPOrCIDR
+// names, a bare address being the network of that address alone (/32, /128),
+// so that 192.0.2.1 and 192.0.2.1/32 compare equal.
+func networkOf(normalized string) string {
+	if p, err := netip.ParsePrefix(normalized); err == nil {
+		return p.Masked().String()
+	}
+	if a, err := netip.ParseAddr(normalized); err == nil {
+		return netip.PrefixFrom(a, a.BitLen()).String()
+	}
+	return normalized
 }
 
 // renderableBans returns the bans whose address, without the whitespace
@@ -222,8 +238,8 @@ func renderableBans(bans []model.BannedIP) []model.BannedIP {
 // when its list needs no change. ub holds the exception IPs of the host's URI
 // block and of the global one, and each is written into the host's geo block
 // of exception addresses ($npg_uri_exc_<id>), normalized
-// (model.NormalizeIPOrCIDR) and without duplicates. Any other entry is left
-// out and logged. It named no client's address, and nginx cannot read it as a
+// (model.NormalizeIPOrCIDR) and once for each network (networkOf). Any other
+// entry is left out and logged. It named no client's address, and nginx cannot read it as a
 // network in the geo block. An entry with spaces around it, which the API
 // accepts, never matched; written without them now, it does.
 func renderableURIBlock(hostID string, ub *model.URIBlock) *model.URIBlock {
@@ -240,10 +256,11 @@ func renderableURIBlock(hostID string, ub *model.URIBlock) *model.URIBlock {
 				hostID, ip)
 			continue
 		}
-		if seen[normalized] {
+		if key := networkOf(normalized); seen[key] {
 			continue // a geo block warns about a network listed twice
+		} else {
+			seen[key] = true
 		}
-		seen[normalized] = true
 		ips = append(ips, normalized)
 	}
 	if slices.Equal(ips, ub.ExceptionIPs) {

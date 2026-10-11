@@ -153,6 +153,32 @@ func TestURIBlockUnderAuthBypassKeepsTheBypass(t *testing.T) {
 	}
 }
 
+// The ungated exception path under a bypass forwards the request target as
+// sent, without the login, as the bypass location does. So it refuses what
+// the bypass location refuses: a path in which a backend may find a dot
+// segment nginx did not resolve ($npg_request_path is ""). A gated rule and a
+// host without login keep their locations as they were.
+func TestURIBlockUnderAuthBypassRefusesUnresolvedDotSegments(t *testing.T) {
+	const guard = "        if ($npg_request_path = \"\") {\n            set $block_reason_var \"access_denied\";\n            return 403;\n        }\n"
+	out := generateForTest(t, goldenCaseData(t, "uri_block_exception_under_auth_bypass"))
+	api := locationBlock(t, out, "location ^~ /api/config {")
+	at := strings.Index(api, guard)
+	if at < 0 {
+		t.Fatalf("the /api/config location, under the /api bypass, has no dot-segment guard:\n%s", api)
+	}
+	if exc := strings.Index(api, "if ($uri_block_exception = 0) {"); exc < 0 || exc > at || at > strings.Index(api, "proxy_pass ") {
+		t.Errorf("the guard is not between the exception check and proxy_pass:\n%s", api)
+	}
+	if admin := locationBlock(t, out, "location ^~ /admin {"); strings.Contains(admin, "$npg_request_path") {
+		t.Errorf("the gated /admin location got the guard:\n%s", admin)
+	}
+	for _, name := range []string{"uri_block_with_exception", "uri_block_exception_forwardauth"} {
+		if block := locationBlock(t, generateForTest(t, goldenCaseData(t, name)), "location ^~ /admin {"); strings.Contains(block, "$npg_request_path") {
+			t.Errorf("%s: the /admin location got the guard:\n%s", name, block)
+		}
+	}
+}
+
 func TestUnderAuthBypass(t *testing.T) {
 	bypass := []string{"/api", "/public/"}
 	for _, tc := range []struct {

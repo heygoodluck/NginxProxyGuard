@@ -230,13 +230,34 @@ func TestRenderableURIBlockKeepsOnlyAddressesAsExceptionIPs(t *testing.T) {
 	}
 }
 
+// The same network written two ways (a bare address and its /32 or /128, or
+// a host and a global entry in different spellings) reaches a geo block once,
+// in the first spelling: nginx warns about a network listed twice on every
+// reload. "/0" and default stay apart.
+func TestRenderableEntriesAreUniqueByNetwork(t *testing.T) {
+	ub := renderableURIBlock("h", &model.URIBlock{Enabled: true, ExceptionIPs: []string{
+		"192.0.2.1", "192.0.2.1/32", "198.51.100.7/32", " 198.51.100.7", "2001:db8::10/128", "2001:DB8::10",
+		"2001:db8::/32", "2001:DB8:0::/32", "0.0.0.0/0", "192.0.2.0/24", "192.0.2.77/24",
+	}})
+	if want := "192.0.2.1,198.51.100.7/32,2001:db8::10/128,2001:db8::/32,0.0.0.0/0,192.0.2.0/24"; strings.Join(ub.ExceptionIPs, ",") != want {
+		t.Errorf("URI block exception IPs = %q, want %q", strings.Join(ub.ExceptionIPs, ","), want)
+	}
+	geo := renderableGeo("h", &model.GeoRestriction{AllowedIPs: []string{
+		"203.0.113.5", "203.0.113.5/32", "::ffff:203.0.113.5", "2001:db8::1", "2001:db8::1/128",
+	}})
+	if want := "203.0.113.5,2001:db8::1"; strings.Join(geo.AllowedIPs, ",") != want {
+		t.Errorf("priority allow entries = %q, want %q", strings.Join(geo.AllowedIPs, ","), want)
+	}
+}
+
 // Every country code and priority allow entry a geo restriction can have been
 // saved with still reaches the config after the API started checking them:
 // two letters in any case (written in upper case, the case the GeoIP lookup
 // gives), "--", and every IP address or CIDR range Go reads, IPv6 ranges and
-// IPv4-mapped forms included (written once each, as model.NormalizeIPOrCIDR
-// gives them). What is left out is not a code the lookup gives or an
-// address, and never matched a request.
+// IPv4-mapped forms included (written as model.NormalizeIPOrCIDR gives them,
+// once for each network: 192.0.2.1/32 and ::ffff:192.0.2.1 are one). What is
+// left out is not a code the lookup gives or an address, and never matched a
+// request.
 func TestStoredGeoEntriesStillRender(t *testing.T) {
 	countries := []struct{ stored, rendered string }{
 		{"KR", "KR"}, {"XK", "XK"}, {"EU", "EU"}, {"UK", "UK"}, {"--", "--"},
@@ -261,7 +282,8 @@ func TestStoredGeoEntriesStillRender(t *testing.T) {
 	}
 	for _, a := range addresses {
 		storedIPs = append(storedIPs, a.stored)
-		if a.rendered != "" && !slices.Contains(wantIPs, a.rendered) {
+		sameNetwork := func(w string) bool { return networkOf(w) == networkOf(a.rendered) }
+		if a.rendered != "" && !slices.ContainsFunc(wantIPs, sameNetwork) {
 			wantIPs = append(wantIPs, a.rendered)
 		}
 	}
