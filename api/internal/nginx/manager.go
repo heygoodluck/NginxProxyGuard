@@ -50,6 +50,14 @@ type Manager struct {
 	reloadConfirmWait  time.Duration
 	reloadConfirmEvery time.Duration
 
+	// inLock is true while executeWithLock runs its function, and
+	// pendingReload is the last reload signalled there, which
+	// executeWithLock confirms once it has released the lock. Both are used
+	// only under globalNginxMutex: reloadNginxInternal runs outside it only
+	// in tests, which call it directly.
+	inLock        bool
+	pendingReload *pendingReload
+
 	// legacyZoneTexts returns the hosts' Advanced Config that may use a rate
 	// limit zone by its old name (LegacyZoneRefs). Nil: none are read.
 	legacyZoneTexts func(ctx context.Context) ([]string, error)
@@ -247,21 +255,65 @@ func (m *Manager) writeFileAtomic(filePath string, data []byte, perm os.FileMode
 
 // executeWithLock runs a function with the global nginx mutex locked
 // This ensures all config operations are serialized
+//
+// nginx needs a while to load a configuration (about 0.6s with the CRS
+// rules), so the last reload fn signals is confirmed after the mutex is
+// released: the caller still waits for nginx's answer, the next operation
+// does not. When fn succeeded, that answer is the result, nil or
+// *ReloadRejectedError. When fn failed, its error is the result and the
+// reload is not confirmed.
+//
+// The next operation may signal its own reload meanwhile. The files on disk
+// hold every change saved so far, so a later reload nginx takes includes
+// this one's change, and an [emerg] line after this signal with no new
+// worker means nginx did not load the newest files, which include it.
 func (m *Manager) executeWithLock(ctx context.Context, fn func() error) error {
 	// Check if context is already cancelled before waiting for the lock
 	if ctx.Err() != nil {
 		return fmt.Errorf("nginx operation cancelled before acquiring lock: %w", ctx.Err())
 	}
 
+	pending, err := m.runLocked(ctx, fn)
+	if pending == nil {
+		return err
+	}
+	if err != nil {
+		metrics.NginxReloadConfirmTotal.WithLabelValues("unconfirmed").Inc()
+		log.Printf("[WARN] [NginxReload] whether nginx took the last reload is not checked, because the operation that signalled it failed: %v", err)
+		return err
+	}
+	return m.confirmReload(ctx, pending.before, pending.sentAt)
+}
+
+// runLocked runs fn under globalNginxMutex and returns the last reload fn
+// signalled, which is still to be confirmed.
+func (m *Manager) runLocked(ctx context.Context, fn func() error) (*pendingReload, error) {
 	globalNginxMutex.Lock()
 	defer globalNginxMutex.Unlock()
 
 	// Check again after acquiring the lock (may have waited a long time)
 	if ctx.Err() != nil {
-		return fmt.Errorf("nginx operation cancelled while waiting for lock: %w", ctx.Err())
+		return nil, fmt.Errorf("nginx operation cancelled while waiting for lock: %w", ctx.Err())
 	}
 
-	return fn()
+	m.inLock = true
+	defer func() {
+		m.inLock = false
+		m.dropPendingReload() // still set only when fn panicked
+	}()
+	err := fn()
+	pending := m.pendingReload
+	m.pendingReload = nil
+	return pending, err
+}
+
+// dropPendingReload counts the reload executeWithLock was to confirm as
+// unconfirmed, and forgets it.
+func (m *Manager) dropPendingReload() {
+	if m.pendingReload != nil {
+		metrics.NginxReloadConfirmTotal.WithLabelValues("unconfirmed").Inc()
+		m.pendingReload = nil
+	}
 }
 
 // testAndReloadNginx tests and reloads nginx configuration
@@ -482,8 +534,10 @@ func (m *Manager) testConfigInternal(ctx context.Context) error {
 }
 
 // reloadNginxInternal signals nginx to reload and, unless confirmation is
-// off, waits for nginx to take or refuse it (confirmReload). It returns
-// *ReloadRejectedError when nginx refused it. Without the lock.
+// off, finds out whether nginx took or refused it (confirmReload). Inside
+// executeWithLock it leaves that to executeWithLock, which confirms the last
+// reload once the lock is released; outside it, it waits here. Either way a
+// refusal reaches the caller as *ReloadRejectedError.
 func (m *Manager) reloadNginxInternal(ctx context.Context) error {
 	if m.skipTest {
 		return nil
@@ -496,12 +550,20 @@ func (m *Manager) reloadNginxInternal(ctx context.Context) error {
 	if err := m.cli.Reload(ctx); err != nil {
 		return err
 	}
+	if m.inLock {
+		m.dropPendingReload() // this reload supersedes it
+	}
 	if snapErr != nil {
 		metrics.NginxReloadConfirmTotal.WithLabelValues("unconfirmed").Inc()
 		log.Printf("[WARN] [NginxReload] could not read nginx's processes before the reload, so whether nginx took it is not checked: %v", snapErr)
 		return nil
 	}
-	return m.confirmReload(ctx, reloadSnapshot{master: master, children: children}, sentAt)
+	before := reloadSnapshot{master: master, children: children}
+	if m.inLock {
+		m.pendingReload = &pendingReload{before: before, sentAt: sentAt}
+		return nil
+	}
+	return m.confirmReload(ctx, before, sentAt)
 }
 
 func (m *Manager) GenerateConfig(ctx context.Context, host *model.ProxyHost) error {

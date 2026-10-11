@@ -213,6 +213,13 @@ type reloadSnapshot struct {
 	children map[int]bool
 }
 
+// pendingReload is a reload signalled inside executeWithLock, which confirms
+// it once the lock is released.
+type pendingReload struct {
+	before reloadSnapshot
+	sentAt time.Time
+}
+
 // reloadLogChecks are the times after the signal at which confirmReload reads
 // nginx's log while it waits, besides once at the end. A master that refuses
 // a reload logs it at once, but one that takes it can need a while to start
