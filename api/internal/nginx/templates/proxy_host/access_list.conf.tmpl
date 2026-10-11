@@ -14,8 +14,11 @@ geo $banned_ip_{{sanitizeID .Host.ID}} {
 }
 {{end}}
 
-{{if .GlobalTrustedIPs}}
+{{if or .GlobalTrustedIPs .RateLimitEnabled}}
 # Global trusted IPs geo mapping (bypass all security)
+{{- if .RateLimitEnabled}}. Written for a host
+# with rate limiting even with no trusted IPs: its key chain reads it.
+{{- end}}
 geo $trusted_ip_{{sanitizeID .Host.ID}} {
     default 0;
 {{range .GlobalTrustedIPs}}

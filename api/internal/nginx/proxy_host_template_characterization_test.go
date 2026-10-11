@@ -953,6 +953,20 @@ func goldenCases() []goldenCase {
 				RateLimit:        mkRateLimit("203.0.113.5"),
 			},
 		})
+
+		// An Advanced Config that still uses the zone's old name gets it
+		// defined as an alias (LegacyZoneRefs), so nginx -t passes.
+		hostAlias := goldenBaseHost("00000000-0000-0000-0000-000000000a11", "ratelimit-alias.example.com")
+		hostAlias.AdvancedConfig = "location /slow {\n    limit_req zone=rate_00000000_0000_0000_0000_000000000a11 burst=1;\n}"
+		cases = append(cases, goldenCase{
+			name: "rate_limit_legacy_zone_alias",
+			data: ProxyHostConfigData{
+				Host:                hostAlias,
+				GlobalSettings:      baseGlobalSettings(),
+				RateLimit:           mkRateLimit(""),
+				LegacyRateZoneAlias: true,
+			},
+		})
 	}
 
 	return cases

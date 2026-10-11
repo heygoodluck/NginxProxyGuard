@@ -88,6 +88,7 @@ type ProxyHostConfigData struct {
 	AdvancedConfigLocationLevel   string                // Location-level directives extracted from AdvancedConfig
 	AdvancedConfigAuthRequest     bool                  // True if AdvancedConfig is rendered into the server block and sets auth_request at its top level (legacy, see GenerateConfigFull)
 	GlobalTrustedIPs              []string              // Global trusted IPs that bypass all security (from system settings)
+	LegacyRateZoneAlias           bool                  // Also define rate_<id>, the zone's name before v2.62.0, which Advanced Config or the custom HTTP config still uses (LegacyZoneRefs)
 	HTTPPort                      string                // HTTP listen port (default: 80)
 	HTTPSPort                     string                // HTTPS listen port (default: 443)
 	EnableIPv6                    bool                  // Enable IPv6 listen directives
@@ -103,6 +104,13 @@ type ProxyHostConfigData struct {
 func (d ProxyHostConfigData) CloudChallenge() bool {
 	return len(d.BlockedCloudIPRanges) > 0 && d.CloudProviderChallengeMode && d.AuthProvider == nil &&
 		d.Host != nil && !advancedConfigHasTopLevel(d.Host.AdvancedConfig, "auth_request")
+}
+
+// RateLimitEnabled reports whether the host has rate limiting on. The rate
+// limit key chain reads $trusted_ip_<id>, so access_list.conf defines that
+// variable for such a host even when there are no global trusted IPs.
+func (d ProxyHostConfigData) RateLimitEnabled() bool {
+	return d.RateLimit != nil && d.RateLimit.Enabled
 }
 
 // ChallengeGate reports whether the host renders the challenge gate: the

@@ -58,5 +58,5 @@ export function grepProxyConfigs(pattern: string): string {
 
 /** Zone name nginx uses for a host's rate limiter (mirrors sanitizeID). */
 export function rateZoneName(hostId: string): string {
-  return `rate_${hostId.replace(/-/g, '_')}`;
+  return `npg_rl_${hostId.replace(/-/g, '_')}`;
 }

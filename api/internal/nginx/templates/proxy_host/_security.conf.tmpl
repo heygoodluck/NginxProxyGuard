@@ -642,7 +642,7 @@
 
 {{if .RateLimit}}{{if .RateLimit.Enabled}}
     # Rate Limiting
-    limit_req zone=rate_{{sanitizeID .Host.ID}} burst={{.RateLimit.BurstSize}} nodelay;
+    limit_req zone=npg_rl_{{sanitizeID .Host.ID}} burst={{.RateLimit.BurstSize}} nodelay;
     limit_req_status {{.RateLimit.LimitResponse}};
     error_page {{.RateLimit.LimitResponse}} = @rate_limited;
 {{end}}{{end}}

@@ -11,30 +11,31 @@ map "$request_method:$npg_request_path" $rate_limit_key_{{sanitizeID .Host.ID}} 
     "~*^(?:GET|HEAD):[^;]*\.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot|webp|avif|mp4|webm|pdf|zip|tar|gz|rar)$"  "";
     default  {{$limitKey}};
 }
-{{$id := sanitizeID .Host.ID}}{{$rateKey := printf "$rate_limit_key_%s" $id}}{{$exceptions := ipWhitelist .RateLimit.WhitelistIPs}}
-{{- if $exceptions}}
-# Rate limit exceptions bypass the zone (empty key = no rate limit)
+{{- $id := sanitizeID .Host.ID}}
+# Rate limit exceptions and global trusted IPs bypass the zone (empty key = no
+# rate limit). The chain is written whole even when both lists are empty: a
+# running nginx refuses a reload that changes the key of a zone it has, so the
+# key is always $rate_final_key_{{$id}}.
 geo $rate_wl_{{$id}} {
     default 0;
-{{- range $exceptions}}
+{{- range ipWhitelist .RateLimit.WhitelistIPs}}
     {{.}} 1;
 {{- end}}
 }
 map $rate_wl_{{$id}} $rate_wl_key_{{$id}} {
     1       "";
-    default {{$rateKey}};
+    default $rate_limit_key_{{$id}};
 }
-{{- $rateKey = printf "$rate_wl_key_%s" $id}}
-{{- end}}
-{{- if $.GlobalTrustedIPs}}
-# Global trusted IPs bypass rate limiting (empty key = no rate limit)
 map $trusted_ip_{{$id}} $rate_final_key_{{$id}} {
     1       "";
-    default {{$rateKey}};
+    default $rate_wl_key_{{$id}};
 }
-{{- $rateKey = printf "$rate_final_key_%s" $id}}
+limit_req_zone $rate_final_key_{{$id}} zone=npg_rl_{{$id}}:{{.RateLimit.ZoneSize}} rate={{.RateLimit.RequestsPerSecond}}r/s;
+{{- if .LegacyRateZoneAlias}}
+# The zone's name before v2.62.0, which this host's Advanced Config or the
+# custom HTTP config still uses. It counts separately from the zone above.
+limit_req_zone $rate_final_key_{{$id}} zone=rate_{{$id}}:{{.RateLimit.ZoneSize}} rate={{.RateLimit.RequestsPerSecond}}r/s;
 {{- end}}
-limit_req_zone {{$rateKey}} zone=rate_{{$id}}:{{.RateLimit.ZoneSize}} rate={{.RateLimit.RequestsPerSecond}}r/s;
 
 {{end}}{{end}}
 
