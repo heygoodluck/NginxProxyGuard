@@ -93,6 +93,12 @@ func (h *ProxyHostHandler) Create(c echo.Context) error {
 
 	host, err := h.service.Create(c.Request().Context(), &req)
 	if err != nil {
+		if reloadRefused(err) && host != nil {
+			// The host is saved and its file is on disk (the service keeps
+			// both): record it as created, and name it in the 409.
+			h.auditCreate(c, &req)
+			return reloadRejectedWithID(c, "create proxy host", err, host.ID)
+		}
 		errMsg := err.Error()
 		// Handle specific error cases with appropriate HTTP status codes
 		if strings.Contains(errMsg, "already exist") || strings.Contains(errMsg, "listener conflict") || strings.Contains(errMsg, "conflict:") {
@@ -104,12 +110,16 @@ func (h *ProxyHostHandler) Create(c echo.Context) error {
 		return internalError(c, "create proxy host", err)
 	}
 
-	// Log audit
+	h.auditCreate(c, &req)
+
+	return c.JSON(http.StatusCreated, host)
+}
+
+// auditCreate records the creation of the host req describes.
+func (h *ProxyHostHandler) auditCreate(c echo.Context, req *model.CreateProxyHostRequest) {
 	destination := fmt.Sprintf("%s://%s", req.ForwardScheme, net.JoinHostPort(req.ForwardHost, strconv.Itoa(req.ForwardPort)))
 	auditCtx := service.ContextWithAudit(c.Request().Context(), c)
 	h.audit.LogProxyHostCreate(auditCtx, req.DomainNames, destination)
-
-	return c.JSON(http.StatusCreated, host)
 }
 
 func (h *ProxyHostHandler) GetByID(c echo.Context) error {
@@ -262,6 +272,12 @@ func (h *ProxyHostHandler) Update(c echo.Context) error {
 		host, err = h.service.Update(c.Request().Context(), id, &req, ddnsRemoveProvider)
 	}
 	if err != nil {
+		if reloadRefused(err) && host != nil {
+			// The update is saved and its file is on disk (the service
+			// keeps both): record it, then answer 409.
+			h.auditUpdate(c, id, existingHost, host, &req)
+			return internalError(c, "update proxy host", err)
+		}
 		errMsg := err.Error()
 		// Handle specific error cases with appropriate HTTP status codes
 		if strings.Contains(errMsg, "already exist") || strings.Contains(errMsg, "listener conflict") || strings.Contains(errMsg, "conflict:") {
@@ -277,21 +293,27 @@ func (h *ProxyHostHandler) Update(c echo.Context) error {
 		return notFoundError(c, "Proxy host")
 	}
 
-	// Log audit
-	if existingHost != nil {
-		auditCtx := service.ContextWithAudit(c.Request().Context(), c)
-		// Check if it's just an enable/disable toggle
-		if req.Enabled != nil && existingHost.Enabled != *req.Enabled {
-			h.audit.LogProxyHostToggle(auditCtx, host.DomainNames, *req.Enabled)
-		} else {
-			changes := map[string]interface{}{
-				"id": id,
-			}
-			h.audit.LogProxyHostUpdate(auditCtx, host.DomainNames, changes)
-		}
-	}
+	h.auditUpdate(c, id, existingHost, host, &req)
 
 	return c.JSON(http.StatusOK, host)
+}
+
+// auditUpdate records the update of host id, which was existingHost before
+// req and is host after it.
+func (h *ProxyHostHandler) auditUpdate(c echo.Context, id string, existingHost, host *model.ProxyHost, req *model.UpdateProxyHostRequest) {
+	if existingHost == nil {
+		return
+	}
+	auditCtx := service.ContextWithAudit(c.Request().Context(), c)
+	// Check if it's just an enable/disable toggle
+	if req.Enabled != nil && existingHost.Enabled != *req.Enabled {
+		h.audit.LogProxyHostToggle(auditCtx, host.DomainNames, *req.Enabled)
+	} else {
+		changes := map[string]interface{}{
+			"id": id,
+		}
+		h.audit.LogProxyHostUpdate(auditCtx, host.DomainNames, changes)
+	}
 }
 
 func (h *ProxyHostHandler) Delete(c echo.Context) error {
@@ -306,16 +328,25 @@ func (h *ProxyHostHandler) Delete(c echo.Context) error {
 	host, _ := h.service.GetByID(c.Request().Context(), id)
 
 	if err := h.service.Delete(c.Request().Context(), id, ddnsRemoveProviderRequested(c)); err != nil {
+		if reloadRefused(err) {
+			// The row is gone and so is the host's file: record the
+			// deletion, then answer 409.
+			h.auditDelete(c, host)
+		}
 		return internalError(c, "delete proxy host", err)
 	}
 
-	// Log audit
+	h.auditDelete(c, host)
+
+	return c.NoContent(http.StatusNoContent)
+}
+
+// auditDelete records the deletion of host.
+func (h *ProxyHostHandler) auditDelete(c echo.Context, host *model.ProxyHost) {
 	if host != nil {
 		auditCtx := service.ContextWithAudit(c.Request().Context(), c)
 		h.audit.LogProxyHostDelete(auditCtx, host.DomainNames)
 	}
-
-	return c.NoContent(http.StatusNoContent)
 }
 
 func (h *ProxyHostHandler) ToggleFavorite(c echo.Context) error {
@@ -435,6 +466,12 @@ func (h *ProxyHostHandler) Clone(c echo.Context) error {
 
 	host, err := h.service.Clone(c.Request().Context(), id, &req)
 	if err != nil {
+		if reloadRefused(err) && host != nil {
+			// The clone is saved and its file is on disk (the service keeps
+			// both): record it, and name it in the 409.
+			h.auditClone(c, sourceHost, &req)
+			return reloadRejectedWithID(c, "clone proxy host", err, host.ID)
+		}
 		errMsg := err.Error()
 		if strings.Contains(errMsg, "already exist") || strings.Contains(errMsg, "listener conflict") || strings.Contains(errMsg, "conflict:") {
 			return conflictError(c, errMsg)
@@ -448,11 +485,15 @@ func (h *ProxyHostHandler) Clone(c echo.Context) error {
 		return internalError(c, "clone proxy host", err)
 	}
 
-	// Log audit
+	h.auditClone(c, sourceHost, &req)
+
+	return c.JSON(http.StatusCreated, host)
+}
+
+// auditClone records a clone of sourceHost under req's domain names.
+func (h *ProxyHostHandler) auditClone(c echo.Context, sourceHost *model.ProxyHost, req *model.CloneProxyHostRequest) {
 	if sourceHost != nil {
 		auditCtx := service.ContextWithAudit(c.Request().Context(), c)
 		h.audit.LogProxyHostClone(auditCtx, sourceHost.DomainNames, req.DomainNames)
 	}
-
-	return c.JSON(http.StatusCreated, host)
 }

@@ -106,6 +106,9 @@ func (h *SecurityHandler) UpdateGlobalBotFilter(c echo.Context) error {
 
 	g, err := h.securityService.UpdateGlobalBotFilter(c.Request().Context(), &req)
 	if err != nil {
+		if reloadRefused(err) {
+			h.audit.LogGlobalBotFilterUpdate(service.ContextWithAudit(c.Request().Context(), c))
+		}
 		return internalError(c, "update global bot filter", err)
 	}
 
@@ -200,6 +203,9 @@ func (h *SecurityHandler) UpdateGlobalSecurityHeaders(c echo.Context) error {
 	if err != nil {
 		if errors.Is(err, model.ErrInvalidInput) {
 			return badRequestError(c, trimInvalidInputPrefix(err))
+		}
+		if reloadRefused(err) {
+			h.audit.LogGlobalSecurityHeadersUpdate(service.ContextWithAudit(c.Request().Context(), c))
 		}
 		return internalError(c, "update global security headers", err)
 	}

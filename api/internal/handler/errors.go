@@ -33,6 +33,10 @@ type ErrorResponse struct {
 	Details string `json:"details,omitempty"`
 	// Code names a failure the client can act on, e.g. nginx_reload_rejected.
 	Code string `json:"code,omitempty"`
+	// ID is the id of what a create saved although it answers with an error:
+	// a proxy host created or cloned whose reload nginx refused
+	// (nginx_reload_rejected).
+	ID string `json:"id,omitempty"`
 }
 
 // internalError logs the actual error and returns a generic message to the client
@@ -181,11 +185,51 @@ func noContentResponse(c echo.Context) error {
 func reloadRejectedResponse(err error) (int, ErrorResponse, bool) {
 	var rejected *nginx.ReloadRejectedError
 	if !errors.As(err, &rejected) {
-		return 0, ErrorResponse{}, false
+		if !errors.Is(err, nginx.ErrReloadRejected) {
+			return 0, ErrorResponse{}, false
+		}
+		// The sentinel without the error that carries nginx's line: the
+		// message without a reason, and no details.
+		rejected = &nginx.ReloadRejectedError{}
 	}
 	return http.StatusConflict, ErrorResponse{
 		Error:   rejected.Error(),
 		Details: rejected.Detail,
 		Code:    "nginx_reload_rejected",
 	}, true
+}
+
+// reloadRefused reports whether err is a reload the running nginx refused
+// (nginx.ErrReloadRejected). The change is saved and its files are on disk,
+// so a handler records it in the audit log as it does a change nginx took,
+// and then answers 409.
+func reloadRefused(err error) bool {
+	return errors.Is(err, nginx.ErrReloadRejected)
+}
+
+// reloadRejectedWithID answers a create the running nginx refused to load
+// as internalError does, with the saved host's id in the 409: a client that
+// goes on after a create (the UI saves the form's other settings) needs it.
+func reloadRejectedWithID(c echo.Context, operation string, err error, id string) error {
+	status, body, ok := reloadRejectedResponse(err)
+	if !ok {
+		return internalError(c, operation, err)
+	}
+	log.Printf("[ERROR] %s: %v", operation, err)
+	body.ID = id
+	return c.JSON(status, body)
+}
+
+// writeReloadRejected answers a refused reload (reloadRejectedResponse) for
+// the handlers written for http.ResponseWriter, and reports whether err was
+// one.
+func writeReloadRejected(w http.ResponseWriter, err error) bool {
+	status, body, ok := reloadRejectedResponse(err)
+	if !ok {
+		return false
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(body)
+	return true
 }

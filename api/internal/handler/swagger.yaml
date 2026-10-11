@@ -349,8 +349,11 @@ paths:
       summary: Create proxy host
       description: |
         Creates a proxy host, writes its nginx config, runs `nginx -t` and
-        reloads. If config generation or the reload fails the database row is
-        rolled back. Requires the `proxy:write` scope when called with an API token.
+        reloads. If config generation or `nginx -t` fails the database row is
+        rolled back. If `nginx -t` passes but the running nginx refuses the
+        reload, the host stays saved and the answer is 409
+        `nginx_reload_rejected` with the host's `id`. Requires the
+        `proxy:write` scope when called with an API token.
       security:
         - BearerAuth: []
       requestBody:
@@ -369,7 +372,11 @@ paths:
         '400':
           $ref: '#/components/responses/BadRequest'
         '409':
-          description: Domain already exists, or a stream listener (host/port/protocol) conflicts with another host
+          description: |
+            Domain already exists, or a stream listener (host/port/protocol)
+            conflicts with another host. Or `code` is `nginx_reload_rejected`:
+            the host is saved, but the running nginx refused to load it;
+            `id` is the saved host's id and `details` nginx's message.
           content:
             application/json:
               schema:
@@ -470,7 +477,10 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          description: Domain already exists, or a stream listener conflicts with another host
+          description: |
+            Domain already exists, or a stream listener conflicts with another
+            host. Or `code` is `nginx_reload_rejected`: the update is saved, but
+            the running nginx refused to load it; `details` is nginx's message.
           content:
             application/json:
               schema:
@@ -499,6 +509,15 @@ paths:
       responses:
         '204':
           description: Proxy host deleted
+        '409':
+          description: |
+            `code` is `nginx_reload_rejected`: the host is deleted, but the
+            running nginx refused to load the configuration without it;
+            `details` is nginx's message.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /proxy-hosts/{id}/rate-limit:
     get:
       tags: [Security]
@@ -7980,7 +7999,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
         '409':
-          description: Target domain already exists, or a stream listener conflicts
+          description: |
+            Target domain already exists, or a stream listener conflicts. Or
+            `code` is `nginx_reload_rejected`: the clone is saved, but the
+            running nginx refused to load it; `id` is the clone's id and
+            `details` nginx's message.
           content:
             application/json:
               schema:
@@ -10998,6 +11021,10 @@ components:
         code:
           type: string
           description: "Machine-readable reason, when there is one. nginx_reload_rejected (409): the change is saved, but the running nginx refused to load it; details holds nginx's message."
+        id:
+          type: string
+          format: uuid
+          description: "The id of what a create saved although it answers with an error: a proxy host created or cloned whose reload nginx refused (nginx_reload_rejected)."
     User:
       type: object
       description: |

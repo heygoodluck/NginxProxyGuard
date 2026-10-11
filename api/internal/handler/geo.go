@@ -65,15 +65,26 @@ func (h *GeoHandler) UpdateGlobal(c echo.Context) error {
 
 	// Regenerate all hosts so inheriting hosts pick up the new default.
 	if err := h.proxyHostService.SyncAllConfigs(c.Request().Context()); err != nil {
+		if reloadRefused(err) {
+			h.auditGlobalUpdate(c)
+		}
+		if status, body, ok := reloadRejectedResponse(err); ok {
+			return c.JSON(status, body)
+		}
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to regenerate configs: " + SafeErrorMessage(err)})
 	}
 
+	h.auditGlobalUpdate(c)
+
+	return c.JSON(http.StatusOK, g)
+}
+
+// auditGlobalUpdate records a change to the global geo default.
+func (h *GeoHandler) auditGlobalUpdate(c echo.Context) {
 	if h.audit != nil {
 		auditCtx := service.ContextWithAudit(c.Request().Context(), c)
 		h.audit.LogGlobalGeoUpdate(auditCtx)
 	}
-
-	return c.JSON(http.StatusOK, g)
 }
 
 // GetByProxyHost returns geo restriction settings for a proxy host
@@ -140,6 +151,9 @@ func (h *GeoHandler) SetForProxyHost(c echo.Context) error {
 	// Regenerate nginx config with geo restrictions (skip if requested)
 	if !skipReload {
 		if err := h.regenerateHostConfig(c, proxyHostID); err != nil {
+			if status, body, ok := reloadRejectedResponse(err); ok {
+				return c.JSON(status, body)
+			}
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to regenerate nginx config: " + SafeErrorMessage(err)})
 		}
 	}
@@ -169,6 +183,9 @@ func (h *GeoHandler) UpdateForProxyHost(c echo.Context) error {
 
 	// Regenerate nginx config
 	if err := h.regenerateHostConfig(c, proxyHostID); err != nil {
+		if status, body, ok := reloadRejectedResponse(err); ok {
+			return c.JSON(status, body)
+		}
 		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to regenerate nginx config: " + SafeErrorMessage(err)})
 	}
 
@@ -187,6 +204,9 @@ func (h *GeoHandler) DeleteForProxyHost(c echo.Context) error {
 	// Regenerate nginx config without geo restrictions (skip if requested)
 	if !skipReload {
 		if err := h.regenerateHostConfig(c, proxyHostID); err != nil {
+			if status, body, ok := reloadRejectedResponse(err); ok {
+				return c.JSON(status, body)
+			}
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to regenerate nginx config: " + SafeErrorMessage(err)})
 		}
 	}

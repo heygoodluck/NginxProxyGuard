@@ -681,6 +681,9 @@ func (s *ProxyHostService) prepareUpdateProxyHostRequest(ctx context.Context, id
 	return oldConfigFilename, candidate, nil
 }
 
+// Create saves a new proxy host and applies its nginx config. When the
+// running nginx refuses the reload (nginx.ErrReloadRejected), the host stays
+// saved and is returned together with the error.
 func (s *ProxyHostService) Create(ctx context.Context, req *model.CreateProxyHostRequest) (*model.ProxyHost, error) {
 	if err := normalizeCreateProxyHostRequest(req); err != nil {
 		return nil, err
@@ -810,6 +813,7 @@ func (s *ProxyHostService) Create(ctx context.Context, req *model.CreateProxyHos
 				// take, and is returned with the error so Clone can finish.
 				_ = s.repo.UpdateConfigStatus(ctx, host.ID, "error", err.Error())
 				metrics.NginxConfigStatus.WithLabelValues(host.ID).Set(0)
+				s.reconcileHostDDNS(ctx, host, true, false) // as below: the host is saved
 				return host, fmt.Errorf("failed to generate nginx config: %w", err)
 			}
 			// Rollback. Delete the DB row FIRST, then remove the config — same
@@ -945,6 +949,10 @@ func (s *ProxyHostService) UpdateWithoutReload(ctx context.Context, id string, r
 // host's config (WAF auto-ban, security, fail2ban, cloud provider) stay untouched;
 // only the HTTP handler passes it, forwarding the user's answer to "also remove the
 // records at the DNS provider?" when DDNS is switched off. (#219)
+//
+// When the running nginx refuses the reload (nginx.ErrReloadRejected), the
+// update stays saved and the host is returned together with the error, as
+// Create does.
 func (s *ProxyHostService) Update(ctx context.Context, id string, req *model.UpdateProxyHostRequest, ddnsRemoveProvider ...bool) (*model.ProxyHost, error) {
 	var host *model.ProxyHost
 	var err error
@@ -974,6 +982,15 @@ func (s *ProxyHostService) Update(ctx context.Context, id string, req *model.Upd
 		return nil, nil
 	}
 
+	// refused ends an update the running nginx refused to load
+	// (nginx.ErrReloadRejected). Its row and files are saved, so the managed
+	// DNS records follow the host as at the end, and the host is returned
+	// with the error.
+	refused := func(err error) (*model.ProxyHost, error) {
+		s.reconcileHostDDNS(ctx, host, true, removeProviderRecords)
+		return host, err
+	}
+
 	// Regenerate nginx config (atomic operation with global locking)
 	if host.Enabled {
 		newConfigFilename := nginx.GetConfigFilename(host)
@@ -1001,6 +1018,9 @@ func (s *ProxyHostService) Update(ctx context.Context, id string, req *model.Upd
 				// error badge instead of a silently-stale 'ok'.
 				_ = s.repo.UpdateConfigStatus(ctx, host.ID, "error", err.Error())
 				metrics.NginxConfigStatus.WithLabelValues(host.ID).Set(0)
+				if errors.Is(err, nginx.ErrReloadRejected) {
+					return refused(fmt.Errorf("failed to generate nginx config: %w", err))
+				}
 				return nil, fmt.Errorf("failed to generate nginx config: %w", err)
 			}
 		} else {
@@ -1008,6 +1028,9 @@ func (s *ProxyHostService) Update(ctx context.Context, id string, req *model.Upd
 			if err := s.nginx.GenerateConfigAndReload(ctx, configData, wafExclusions); err != nil {
 				_ = s.repo.UpdateConfigStatus(ctx, host.ID, "error", err.Error())
 				metrics.NginxConfigStatus.WithLabelValues(host.ID).Set(0)
+				if errors.Is(err, nginx.ErrReloadRejected) {
+					return refused(fmt.Errorf("failed to generate nginx config: %w", err))
+				}
 				return nil, fmt.Errorf("failed to generate nginx config: %w", err)
 			}
 		}
@@ -1026,6 +1049,9 @@ func (s *ProxyHostService) Update(ctx context.Context, id string, req *model.Upd
 			// (old config may have been the only one if domain changed)
 			currentFilename := nginx.GetConfigFilename(host)
 			if oldConfigFilename == "" || oldConfigFilename == currentFilename {
+				if errors.Is(err, nginx.ErrReloadRejected) {
+					return refused(fmt.Errorf("failed to remove nginx config: %w", err))
+				}
 				return nil, fmt.Errorf("failed to remove nginx config: %w", err)
 			}
 			// Domain changed and old config was removed - just test and reload
@@ -1033,6 +1059,9 @@ func (s *ProxyHostService) Update(ctx context.Context, id string, req *model.Upd
 				return nil, fmt.Errorf("nginx config test failed: %w", testErr)
 			}
 			if reloadErr := s.nginx.ReloadNginx(ctx); reloadErr != nil {
+				if errors.Is(reloadErr, nginx.ErrReloadRejected) {
+					return refused(fmt.Errorf("failed to reload nginx: %w", reloadErr))
+				}
 				return nil, fmt.Errorf("failed to reload nginx: %w", reloadErr)
 			}
 		}

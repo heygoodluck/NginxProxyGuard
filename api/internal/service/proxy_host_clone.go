@@ -38,6 +38,9 @@ func resolveCloneContainerBinding(srcName, srcNetwork, reqName, reqNetwork *stri
 // - GeoRestriction, RateLimit, SecurityHeaders, BotFilter
 // - Upstream (with servers), URIBlock (with rules)
 // - WAF rule exclusions
+//
+// When the running nginx refuses the reload (nginx.ErrReloadRejected), the
+// clone stays saved and is returned together with the error, as Create does.
 func (s *ProxyHostService) Clone(ctx context.Context, sourceID string, req *model.CloneProxyHostRequest) (*model.ProxyHost, error) {
 	// Get source host
 	source, err := s.repo.GetByID(ctx, sourceID)
@@ -233,7 +236,7 @@ func (s *ProxyHostService) Clone(ctx context.Context, sourceID string, req *mode
 	}
 
 	if rejected != nil {
-		return nil, fmt.Errorf("apply the cloned proxy host: %w", rejected)
+		return newHost, fmt.Errorf("apply the cloned proxy host: %w", rejected)
 	}
 
 	// Return fresh host data

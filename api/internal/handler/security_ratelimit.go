@@ -400,6 +400,9 @@ func (h *SecurityHandler) UpdateGlobalRateLimit(c echo.Context) error {
 
 	g, err := h.securityService.UpdateGlobalRateLimit(c.Request().Context(), &req)
 	if err != nil {
+		if reloadRefused(err) {
+			h.audit.LogGlobalRateLimitUpdate(service.ContextWithAudit(c.Request().Context(), c))
+		}
 		return internalError(c, "update global rate limit", err)
 	}
 
@@ -428,6 +431,9 @@ func (h *SecurityHandler) UpdateGlobalWAF(c echo.Context) error {
 
 	g, err := h.securityService.UpdateGlobalWAF(c.Request().Context(), &req)
 	if err != nil {
+		if reloadRefused(err) {
+			h.audit.LogGlobalWAFUpdate(service.ContextWithAudit(c.Request().Context(), c))
+		}
 		return internalError(c, "update global WAF", err)
 	}
 

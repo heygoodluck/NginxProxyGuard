@@ -54,6 +54,12 @@ func (h *CloudProviderHandler) UpdateGlobal(c echo.Context) error {
 	}
 	if h.proxyHostService != nil {
 		if err := h.proxyHostService.SyncAllConfigs(ctx); err != nil {
+			if reloadRefused(err) {
+				h.audit.LogGlobalCloudProvidersUpdate(service.ContextWithAudit(ctx, c))
+			}
+			if status, body, ok := reloadRejectedResponse(err); ok {
+				return c.JSON(status, body)
+			}
 			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Failed to regenerate configs: " + SafeErrorMessage(err)})
 		}
 	}
@@ -212,25 +218,36 @@ func (h *CloudProviderHandler) SetBlockedProviders(c echo.Context) error {
 	// Regenerate nginx config (skip if requested)
 	if !skipReload && h.proxyHostService != nil {
 		if _, err := h.proxyHostService.Update(ctx, proxyHostID, nil); err != nil {
+			if reloadRefused(err) {
+				h.auditHostBlocking(c, proxyHostID, &req)
+			}
+			if status, body, ok := reloadRejectedResponse(err); ok {
+				return c.JSON(status, body)
+			}
 			return c.JSON(http.StatusInternalServerError, map[string]string{
 				"error": "Settings saved but failed to regenerate nginx config: " + SafeErrorMessage(err),
 			})
 		}
 	}
 
-	// Audit log
-	auditCtx := service.ContextWithAudit(ctx, c)
-	h.audit.LogSettingsUpdate(auditCtx, "Blocked Cloud Providers", map[string]interface{}{
-		"proxy_host_id":     proxyHostID,
-		"providers":         req.BlockedProviders,
-		"challenge_mode":    req.ChallengeMode,
-		"allow_search_bots": req.AllowSearchBots,
-	})
+	h.auditHostBlocking(c, proxyHostID, &req)
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"blocked_providers":  req.BlockedProviders,
 		"challenge_mode":     req.ChallengeMode,
 		"allow_search_bots":  req.AllowSearchBots,
 		"message":            "Cloud provider blocking updated successfully",
+	})
+}
+
+// auditHostBlocking records req, a change to the cloud provider blocking of
+// host proxyHostID.
+func (h *CloudProviderHandler) auditHostBlocking(c echo.Context, proxyHostID string, req *model.BlockedCloudProvidersRequest) {
+	auditCtx := service.ContextWithAudit(c.Request().Context(), c)
+	h.audit.LogSettingsUpdate(auditCtx, "Blocked Cloud Providers", map[string]interface{}{
+		"proxy_host_id":     proxyHostID,
+		"providers":         req.BlockedProviders,
+		"challenge_mode":    req.ChallengeMode,
+		"allow_search_bots": req.AllowSearchBots,
 	})
 }

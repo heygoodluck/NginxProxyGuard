@@ -230,6 +230,10 @@ type SyncAllResult struct {
 	ReloadSuccess bool             `json:"reload_success"`
 	ReloadError   string           `json:"reload_error,omitempty"`
 	Hosts         []SyncHostResult `json:"hosts"`
+
+	// reloadErr is the reload's error itself, so that SyncAllConfigs can
+	// return it matchable (a refused reload is nginx.ErrReloadRejected).
+	reloadErr error
 }
 
 func (s *ProxyHostService) SyncAllConfigs(ctx context.Context) error {
@@ -238,8 +242,8 @@ func (s *ProxyHostService) SyncAllConfigs(ctx context.Context) error {
 		if result.TestError != "" {
 			return fmt.Errorf("nginx config test failed: %s", result.TestError)
 		}
-		if result.ReloadError != "" {
-			return fmt.Errorf("nginx reload failed: %s", result.ReloadError)
+		if result.reloadErr != nil {
+			return fmt.Errorf("nginx reload failed: %w", result.reloadErr)
 		}
 		for _, h := range result.Hosts {
 			if !h.Success {
@@ -344,6 +348,7 @@ func (s *ProxyHostService) SyncAllConfigsWithDetails(ctx context.Context) (*Sync
 	if err := s.nginx.ReloadNginx(ctx); err != nil {
 		result.ReloadSuccess = false
 		result.ReloadError = err.Error()
+		result.reloadErr = err
 		return result, nil
 	}
 	result.ReloadSuccess = true

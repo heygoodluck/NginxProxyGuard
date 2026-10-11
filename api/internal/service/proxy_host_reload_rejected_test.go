@@ -155,3 +155,40 @@ func TestCloneFinishesTheCopyWhenNginxRefusesTheReload(t *testing.T) {
 		t.Errorf("the clone was not kept and finished: %v", err)
 	}
 }
+
+// syncRefusingNginx is an nginx manager whose test passes and whose reload
+// the running nginx refuses, for SyncAllConfigs. The other NginxManager
+// methods are nil and panic if called.
+type syncRefusingNginx struct{ NginxManager }
+
+func (syncRefusingNginx) RemoveOrphanedHostConfigs(context.Context, func(context.Context) ([]model.ProxyHost, error)) []string {
+	return nil
+}
+
+func (syncRefusingNginx) TestConfig(context.Context) error { return nil }
+
+func (syncRefusingNginx) ReloadNginx(context.Context) error {
+	return &nginx.ReloadRejectedError{Detail: "bind() to 0.0.0.0:18998 failed (98: Address in use)"}
+}
+
+// Every global default is applied through SyncAllConfigs. Its error has to
+// stay a refusal (errors.Is), so the handlers answer 409 with what to do
+// rather than a 500 with the text.
+func TestSyncAllConfigsKeepsTheRefusal(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	s := &ProxyHostService{repo: repository.NewProxyHostRepository(&database.DB{DB: db}), nginx: syncRefusingNginx{}}
+	mock.ExpectQuery(`FROM proxy_hosts\s+WHERE enabled = true`).WillReturnRows(sqlmock.NewRows([]string{"id"}))
+
+	err = s.SyncAllConfigs(context.Background())
+	if !errors.Is(err, nginx.ErrReloadRejected) {
+		t.Fatalf("err = %v, want ErrReloadRejected", err)
+	}
+	var rejected *nginx.ReloadRejectedError
+	if !errors.As(err, &rejected) || !strings.Contains(rejected.Detail, "Address in use") {
+		t.Errorf("err = %v, want the refusal with nginx's line", err)
+	}
+}
