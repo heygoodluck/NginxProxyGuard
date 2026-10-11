@@ -29,28 +29,43 @@ func (r *AccessListRepository) Create(ctx context.Context, req *model.CreateAcce
 		passAuth = *req.PassAuth
 	}
 
+	// The list and its items are written in one transaction, so a failed
+	// item leaves no list behind.
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
 	var id string
-	err := r.db.QueryRowContext(ctx, `
+	if err := tx.QueryRowContext(ctx, `
 		INSERT INTO access_lists (name, description, satisfy_any, pass_auth)
 		VALUES ($1, $2, $3, $4)
 		RETURNING id
-	`, req.Name, req.Description, satisfyAny, passAuth).Scan(&id)
-	if err != nil {
+	`, req.Name, req.Description, satisfyAny, passAuth).Scan(&id); err != nil {
 		return nil, err
 	}
-
-	// Create items if provided
-	for _, item := range req.Items {
-		_, err = r.db.ExecContext(ctx, `
-			INSERT INTO access_list_items (access_list_id, directive, address, description, sort_order)
-			VALUES ($1, $2, $3, $4, $5)
-		`, id, item.Directive, item.Address, item.Description, item.SortOrder)
-		if err != nil {
-			return nil, err
-		}
+	if err := insertAccessListItems(ctx, tx, id, req.Items); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to commit access list: %w", err)
 	}
 
 	return r.GetByID(ctx, id)
+}
+
+// insertAccessListItems writes items as the items of list listID, in tx.
+func insertAccessListItems(ctx context.Context, tx *sql.Tx, listID string, items []model.CreateAccessListItemRequest) error {
+	for _, item := range items {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO access_list_items (access_list_id, directive, address, description, sort_order)
+			VALUES ($1, $2, $3, $4, $5)
+		`, listID, item.Directive, item.Address, item.Description, item.SortOrder); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *AccessListRepository) GetByID(ctx context.Context, id string) (*model.AccessList, error) {
@@ -189,29 +204,27 @@ func (r *AccessListRepository) Update(ctx context.Context, id string, req *model
 	query += " WHERE id = $" + strconv.Itoa(argIndex)
 	args = append(args, id)
 
-	_, err = r.db.ExecContext(ctx, query, args...)
+	// The list's fields and its items change in one transaction: if an
+	// item fails, the list keeps its previous fields and items.
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, query, args...); err != nil {
 		return nil, err
 	}
-
-	// Update items if provided
 	if req.Items != nil {
-		// Delete existing items
-		_, err = r.db.ExecContext(ctx, `DELETE FROM access_list_items WHERE access_list_id = $1`, id)
-		if err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM access_list_items WHERE access_list_id = $1`, id); err != nil {
 			return nil, err
 		}
-
-		// Insert new items
-		for _, item := range req.Items {
-			_, err = r.db.ExecContext(ctx, `
-				INSERT INTO access_list_items (access_list_id, directive, address, description, sort_order)
-				VALUES ($1, $2, $3, $4, $5)
-			`, id, item.Directive, item.Address, item.Description, item.SortOrder)
-			if err != nil {
-				return nil, err
-			}
+		if err := insertAccessListItems(ctx, tx, id, req.Items); err != nil {
+			return nil, err
 		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to commit access list: %w", err)
 	}
 
 	return r.GetByID(ctx, id)
