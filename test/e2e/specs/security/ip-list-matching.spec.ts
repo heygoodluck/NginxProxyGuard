@@ -20,6 +20,11 @@ const API = 'http://127.0.0.1:19080';
 const PASSED = 404;
 // A client in no list of these tests.
 const OUTSIDER = '192.0.2.1';
+// Hosts and auth providers this file creates. The sweep in afterAll deletes
+// only these: the other spec file using the r1- prefix may be running in
+// parallel.
+const OWN_HOST_PREFIXES = ['r1-uri-', 'r1-prio-', 'r1-fa-'];
+const OWN_PROVIDER_PREFIX = 'r1-fa-';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -89,6 +94,29 @@ test.describe('IP list matching (v2.62.0)', () => {
     }
     for (const id of createdProviders.splice(0)) {
       await request.delete(`${API}/api/v1/auth-providers/${id}`, { headers }).catch(() => undefined);
+    }
+  });
+
+  test.afterAll(async ({ playwright }) => {
+    // Rows a failed or refused save kept, such as a host whose create threw
+    // before the test could note its id. Hosts first, as above.
+    const ctx = await playwright.request.newContext({ baseURL: API });
+    try {
+      const helper = new APIHelper(ctx);
+      await helper.login();
+      for (const h of await helper.getProxyHosts()) {
+        if (OWN_HOST_PREFIXES.some((p) => h.domain_names?.[0]?.startsWith(p))) {
+          await helper.deleteProxyHost(h.id).catch(() => undefined);
+        }
+      }
+      const auth = { Authorization: `Bearer ${await helper.getToken()}` };
+      const res = await ctx.get('/api/v1/auth-providers?per_page=100', { headers: auth });
+      const providers: Array<{ id: string; name: string }> = res.ok() ? ((await res.json()).data ?? []) : [];
+      for (const p of providers.filter((p) => p.name.startsWith(OWN_PROVIDER_PREFIX))) {
+        await ctx.delete(`/api/v1/auth-providers/${p.id}`, { headers: auth }).catch(() => undefined);
+      }
+    } finally {
+      await ctx.dispose();
     }
   });
 
@@ -195,6 +223,7 @@ test.describe('IP list matching (v2.62.0)', () => {
     const token = await api.getToken();
     expect(await probe(domain, '/admin', '203.0.113.5', `Authorization: Bearer ${token}\r\n`), 'logged in').toBe(PASSED);
     expect(await probe(domain, '/admin', '203.0.113.6'), 'not an exception: NPG 403').toBe(403);
+    expect(await probe(domain, '/admin', '203.0.113.50'), 'an address that only begins like the exception: NPG 403').toBe(403);
 
     // Under one of the host's auth bypass paths the host asks for no login,
     // so an exception there reaches the upstream without one.

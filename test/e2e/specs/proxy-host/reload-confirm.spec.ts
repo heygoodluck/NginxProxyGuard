@@ -1,17 +1,21 @@
 import { test, expect } from '@playwright/test';
-import { spawn, spawnSync, ChildProcess } from 'child_process';
+import { spawnSync } from 'child_process';
 import * as net from 'net';
 import { APIHelper } from '../../utils/api-helper';
 
 /**
  * A reload nginx refuses is reported (409 nginx_reload_rejected) instead of
- * passing as applied, and the rate limit zones no longer make nginx refuse
- * reloads when their exception or trusted lists go from empty to non-empty.
+ * passing as applied, and a host's rate limit zone no longer makes nginx
+ * refuse reloads when its exception list goes from empty to non-empty and
+ * back.
  */
 test.describe.configure({ mode: 'serial' });
 
 const API = 'http://127.0.0.1:19080';
 const PROXY_CONTAINER = process.env.NPG_TEST_PROXY_CONTAINER || 'npg-test-proxy';
+// Hosts this file creates. The sweep in afterAll deletes only these: the
+// other spec file using the r1- prefix may be running in parallel.
+const OWN_HOST_PREFIXES = ['r1-stream-', 'r1-rl-'];
 
 /**
  * The nginx container's log since `since`. nginx writes its error log, where
@@ -28,17 +32,16 @@ function nginxLogSince(since: string): string {
   return `${out.stdout}\n${out.stderr}`;
 }
 
-function accepts(port: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const socket = net.createConnection({ host: '127.0.0.1', port });
-    socket.setTimeout(1000);
-    const done = (v: boolean) => {
-      socket.destroy();
-      resolve(v);
-    };
-    socket.on('connect', () => done(true));
-    socket.on('error', () => done(false));
-    socket.on('timeout', () => done(false));
+/**
+ * Listen on port from this process. nginx shares the host network, so this
+ * socket makes its bind() of the port fail. Connections are closed at once:
+ * the socket only holds the port.
+ */
+function holdPort(port: number): Promise<net.Server> {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer((socket) => socket.destroy());
+    server.once('error', (err) => reject(new Error(`port ${port} must be free before the test: ${err.message}`)));
+    server.listen(port, '0.0.0.0', () => resolve(server));
   });
 }
 
@@ -54,6 +57,13 @@ async function eventually(fn: () => Promise<boolean> | boolean, what: string, ms
 test.describe('Reload confirmation (v2.62.0)', () => {
   let api: APIHelper;
   let headers: Record<string, string>;
+  // The port the stream test holds. Closed in its finally, and here too: a
+  // test that times out is abandoned without running its finally.
+  let blocker: net.Server | undefined;
+  const releasePort = () => {
+    if (blocker?.listening) blocker.close();
+    blocker = undefined;
+  };
 
   test.beforeEach(async ({ request }) => {
     api = new APIHelper(request);
@@ -61,20 +71,38 @@ test.describe('Reload confirmation (v2.62.0)', () => {
     headers = { Authorization: `Bearer ${await api.getToken()}` };
   });
 
+  test.afterEach(() => releasePort());
+
+  test.afterAll(async ({ playwright }) => {
+    // Hosts a failed or refused save kept, such as one whose create threw
+    // before the test could note its id.
+    const ctx = await playwright.request.newContext({ baseURL: API });
+    try {
+      const helper = new APIHelper(ctx);
+      await helper.login();
+      for (const h of await helper.getProxyHosts()) {
+        if (OWN_HOST_PREFIXES.some((p) => h.domain_names?.[0]?.startsWith(p))) {
+          await helper.deleteProxyHost(h.id).catch(() => undefined);
+        }
+      }
+    } finally {
+      await ctx.dispose();
+    }
+  });
+
   test('a stream host on a port in use is refused by nginx and reported as 409', async ({ request }) => {
-    // While this host's file is on disk nginx refuses every reload, so a spec
+    // While this host's file is on disk nginx refuses every reload, so a test
     // running in parallel would see 409s. Run it alone: E2E_RELOAD_REJECT=1
     // npx playwright test specs/proxy-host/reload-confirm.spec.ts --workers=1
-    test.skip(!process.env.E2E_RELOAD_REJECT, 'refuses every reload while it runs; run alone with E2E_RELOAD_REJECT=1');
+    test.skip(
+      !(process.env.E2E_RELOAD_REJECT === '1' && test.info().config.workers === 1),
+      'refuses every reload while it runs; run alone with E2E_RELOAD_REJECT=1 and --workers=1'
+    );
     const port = 18998;
-    expect(await accepts(port), `port ${port} must be free before the test`).toBe(false);
-    const blocker: ChildProcess = spawn('python3', ['-m', 'http.server', String(port), '--bind', '0.0.0.0'], {
-      stdio: 'ignore',
-    });
+    blocker = await holdPort(port);
     const since = new Date().toISOString();
     const deleted: number[] = [];
     try {
-      await eventually(() => accepts(port), `the port blocker listens on ${port}`);
       const res = await request.post(`${API}/api/v1/proxy-hosts`, {
         headers,
         data: {
@@ -107,7 +135,7 @@ test.describe('Reload confirmation (v2.62.0)', () => {
           deleted.push((await request.delete(`${API}/api/v1/proxy-hosts/${h.id}`, { headers })).status());
         }
       } finally {
-        blocker.kill();
+        releasePort();
       }
     }
     expect(deleted, 'deleting the refused host reloads nginx cleanly').toEqual([204]);
