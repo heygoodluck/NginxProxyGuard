@@ -31,7 +31,7 @@ func TestAllowedByList(t *testing.T) {
 		{
 			name:   "listed email passes",
 			p:      provider(func(p *SSOProvider) { p.AllowedEmails = []string{"admin@example.com"} }),
-			claims: &SSOClaims{Email: "Admin@Example.com"},
+			claims: &SSOClaims{Email: "Admin@Example.com", EmailVerified: true},
 			want:   true,
 		},
 		{
@@ -43,7 +43,7 @@ func TestAllowedByList(t *testing.T) {
 		{
 			name:   "listed domain passes",
 			p:      provider(func(p *SSOProvider) { p.AllowedEmailDomains = []string{"example.com"} }),
-			claims: &SSOClaims{Email: "anyone@example.com"},
+			claims: &SSOClaims{Email: "anyone@example.com", EmailVerified: true},
 			want:   true,
 		},
 		{
@@ -79,10 +79,40 @@ func TestAllowedByList(t *testing.T) {
 				p.AllowedEmailDomains = []string{"example.com"}
 				p.RequiredGroup = "npg-admins"
 			}),
-			claims: &SSOClaims{Email: "anyone@example.com", Groups: []string{"npg-admins"}},
+			claims: &SSOClaims{Email: "anyone@example.com", EmailVerified: true, Groups: []string{"npg-admins"}},
 			want:   true,
 		},
-	}
+		{
+			name:   "listed email but unverified is refused",
+			p:      provider(func(p *SSOProvider) { p.AllowedEmails = []string{"admin@example.com"} }),
+			claims: &SSOClaims{Email: "admin@example.com", EmailVerified: false},
+			want:   false,
+		},
+		{
+			name:   "listed email unverified passes when provider is trusted",
+			p:      provider(func(p *SSOProvider) { p.AllowedEmails = []string{"admin@example.com"}; p.TrustProviderEmail = true }),
+			claims: &SSOClaims{Email: "admin@example.com", EmailVerified: false},
+			want:   true,
+		},
+		{
+			name:   "listed domain but unverified is refused",
+			p:      provider(func(p *SSOProvider) { p.AllowedEmailDomains = []string{"example.com"} }),
+			claims: &SSOClaims{Email: "anyone@example.com", EmailVerified: false},
+			want:   false,
+		},
+		{
+			name:   "listed domain unverified passes when provider is trusted",
+			p:      provider(func(p *SSOProvider) { p.AllowedEmailDomains = []string{"example.com"}; p.TrustProviderEmail = true }),
+			claims: &SSOClaims{Email: "anyone@example.com", EmailVerified: false},
+			want:   true,
+		},
+		{
+			name:   "required group alone passes even with unverified email",
+			p:      provider(func(p *SSOProvider) { p.RequiredGroup = "npg-admins" }),
+			claims: &SSOClaims{Email: "someone@anywhere.example", EmailVerified: false, Groups: []string{"npg-admins"}},
+			want:   true,
+		},
+}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.p.AllowedByList(tt.claims); got != tt.want {
