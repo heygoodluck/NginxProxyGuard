@@ -270,23 +270,27 @@ type SSOClaims struct {
 
 // AllowedByList reports whether the identity passes the provider's allowlist.
 // The rule is (email OR domain) AND required group, with an empty allowlist
-// meaning "nobody" rather than "everybody".
+// meaning "nobody" rather than "everybody". Matching against an email or
+// domain allowlist requires the identity's email to be verified by the provider
+// or explicitly trusted (TrustProviderEmail).
 func (p *SSOProvider) AllowedByList(c *SSOClaims) bool {
 	email := strings.ToLower(strings.TrimSpace(c.Email))
 	listed := false
-	for _, e := range p.AllowedEmails {
-		if e == email {
-			listed = true
-			break
+	if c.EmailVerified || p.TrustProviderEmail {
+		for _, e := range p.AllowedEmails {
+			if e == email {
+				listed = true
+				break
+			}
 		}
-	}
-	if !listed {
-		if at := strings.LastIndex(email, "@"); at >= 0 {
-			domain := email[at+1:]
-			for _, d := range p.AllowedEmailDomains {
-				if d == domain {
-					listed = true
-					break
+		if !listed {
+			if at := strings.LastIndex(email, "@"); at >= 0 {
+				domain := email[at+1:]
+				for _, d := range p.AllowedEmailDomains {
+					if d == domain {
+						listed = true
+						break
+					}
 				}
 			}
 		}
