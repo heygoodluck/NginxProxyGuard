@@ -210,6 +210,28 @@ var dangerousDirectives = []string{
 	"root",
 	"autoindex",
 	"internal",
+	// Filesystem write / persistence directives — blocked at ANY depth.
+	// proxy_store and related store/temp/cache directives write upstream
+	// responses into local files on disk (e.g. writing into /etc/nginx/conf.d/*.conf
+	// for persistent arbitrary configuration injection).
+	"proxy_store",
+	"proxy_store_access",
+	"fastcgi_store",
+	"fastcgi_store_access",
+	"scgi_store",
+	"scgi_store_access",
+	"uwsgi_store",
+	"uwsgi_store_access",
+	"proxy_temp_path",
+	"fastcgi_temp_path",
+	"scgi_temp_path",
+	"uwsgi_temp_path",
+	"client_body_temp_path",
+	"client_body_in_file_only",
+	"proxy_cache_path",
+	"fastcgi_cache_path",
+	"scgi_cache_path",
+	"uwsgi_cache_path",
 }
 
 // locationOnlyDirectives are legitimate ONLY inside a nested block

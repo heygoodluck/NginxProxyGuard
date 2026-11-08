@@ -70,6 +70,11 @@ func TestValidateAdvancedConfig(t *testing.T) {
 		{"alias in location (file disclosure)", "location /x {\n    alias /etc/;\n    autoindex on;\n}", true},
 		{"root in location (file disclosure)", "location /x {\n    root /etc;\n}", true},
 		{"autoindex in location", "location /x {\n    autoindex on;\n}", true},
+		// Filesystem write / persistence directives
+		{"proxy_store in location (config persistence)", "location /seed {\n    proxy_pass http://127.0.0.1:8080;\n    proxy_store /etc/nginx/conf.d/injected.conf;\n}", true},
+		{"proxy_store at server level", "proxy_store on;", true},
+		{"fastcgi_store in location", "location ~ \\.php$ {\n    fastcgi_pass unix:/run/php.sock;\n    fastcgi_store /tmp/evil.conf;\n}", true},
+		{"proxy_temp_path in location", "location / {\n    proxy_pass http://127.0.0.1:8080;\n    proxy_temp_path /etc/nginx/conf.d;\n}", true},
 		// Always blocked regardless of context.
 		{"lua in location", "location / {\n    content_by_lua_block { os.execute('id') }\n}", true},
 		{"include anywhere", "location / {\n    include /etc/passwd;\n}", true},
