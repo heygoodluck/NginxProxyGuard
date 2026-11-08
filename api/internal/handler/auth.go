@@ -205,6 +205,11 @@ func (h *AuthHandler) ChangeCredentials(c echo.Context) error {
 	if !ok {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "authentication required"})
 	}
+	if !user.IsInitialSetup {
+		return c.JSON(http.StatusForbidden, map[string]string{
+			"error": "Initial setup has already been completed",
+		})
+	}
 
 	var req model.ChangeCredentialsRequest
 	if err := c.Bind(&req); err != nil {
@@ -259,6 +264,10 @@ func (h *AuthHandler) ChangeCredentials(c echo.Context) error {
 		case service.ErrPasswordMismatch:
 			return c.JSON(http.StatusBadRequest, map[string]string{
 				"error": "Passwords do not match",
+			})
+		case service.ErrInitialSetupCompleted:
+			return c.JSON(http.StatusForbidden, map[string]string{
+				"error": "Initial setup has already been completed",
 			})
 		default:
 			return c.JSON(http.StatusInternalServerError, map[string]string{

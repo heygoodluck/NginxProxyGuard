@@ -37,6 +37,7 @@ var (
 	// default arm and answered 500 for what is plainly a client sequencing
 	// mistake.
 	ErrSetupNotInitiated = errors.New("2FA setup not initiated")
+	ErrInitialSetupCompleted = errors.New("initial setup has already been completed")
 )
 
 const (
@@ -497,6 +498,9 @@ func (s *AuthService) ChangeCredentials(ctx context.Context, userID string, req 
 	}
 	if user == nil {
 		return ErrUnauthorized
+	}
+	if !user.IsInitialSetup {
+		return ErrInitialSetupCompleted
 	}
 
 	// Verify current password
